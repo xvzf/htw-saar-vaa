@@ -1,0 +1,5 @@
+launch.sh
+**/*.txt
+.vscode/
+**vendor/
+**/.DS_Store
