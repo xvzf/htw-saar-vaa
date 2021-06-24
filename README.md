@@ -28,12 +28,10 @@ All control messages are of message type `CONTROL` and carry the operation as pa
 
 Supported payload operations:
 
-|------------|-------------------------------------------------------------------------------|
 | Operation  | Action                                                                        |
 |------------|-------------------------------------------------------------------------------|
 | `STARTUP`  | triggers startup, the node registers to neighbors                             |
 | `SHUTDOWN` | triggers graceful shutdown of the node. Remaining transactions are finalised. |
-|------------|-------------------------------------------------------------------------------|
 
 
 The client can be used to execute control commands, e.g.:
