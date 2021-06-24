@@ -11,18 +11,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func strPointer(s string) *string {
-	return &s
-}
-
-func uintPointer(i uint) *uint {
-	return &i
-}
-
-func timePointer(t time.Time) *time.Time {
-	return &t
-}
-
 // Test communication between server & client
 func TestCommunication_valid(t *testing.T) {
 	net_addr := "127.0.0.1:33333"

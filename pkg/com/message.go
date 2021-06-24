@@ -14,6 +14,7 @@ type Message struct {
 	Payload   *string    `json:"payload"`
 }
 
+// Checks if all fields have been set
 func (m *Message) isValid() error {
 	// Input checking
 	if m.UUID == nil {
@@ -35,4 +36,27 @@ func (m *Message) isValid() error {
 		return errors.New("payload not set")
 	}
 	return nil
+}
+
+func strPointer(s string) *string {
+	return &s
+}
+
+func uintPointer(i uint) *uint {
+	return &i
+}
+
+func timePointer(t time.Time) *time.Time {
+	return &t
+}
+
+// Msg is a handy wrapper constructing a message absed on originating uid, type and payload
+func Msg(uid uint, msgType, msgPayload string) *Message {
+	return &Message{
+		TTL:       uintPointer(1),
+		Timestamp: timePointer(time.Now().UTC()),
+		SourceUID: uintPointer(uid),
+		Type:      strPointer(msgType),
+		Payload:   strPointer(msgPayload),
+	}
 }
