@@ -57,7 +57,8 @@ func (c *listenConfig) handleConn(ctx context.Context, conn net.Conn) {
 		Time("timestamp", *msg.Timestamp).
 		Uint("src_uid", *msg.SourceUID).
 		Str("type", *msg.Type).
-		Msg(*msg.Payload)
+		Str("payload", *msg.Payload).
+		Msg("sent")
 
 	// Propagate the message to channel in case our context is not closed yet
 	select {

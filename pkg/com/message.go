@@ -60,3 +60,8 @@ func Msg(uid uint, msgType, msgPayload string) *Message {
 		Payload:   strPointer(msgPayload),
 	}
 }
+
+// Msg is a handy wrapper constructing a message absed on originating uid, type and payload
+func MsgPropagate(uid uint, msg *Message) *Message {
+	return Msg(uid, *msg.Type, *msg.Payload)
+}

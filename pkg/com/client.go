@@ -40,7 +40,8 @@ func Send(target string, msg *Message) error {
 		Time("timestamp", *msg.Timestamp).
 		Uint("src_uid", *msg.SourceUID).
 		Str("type", *msg.Type).
-		Msg(*msg.Payload)
+		Str("payload", *msg.Payload).
+		Msg("sent")
 
 	return nil
 }

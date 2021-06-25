@@ -50,10 +50,20 @@ Supported payload operations:
 |------------|-------------------------------------------------------------------------------|
 | `STARTUP`  | triggers startup, the node registers to neighbors                             |
 | `SHUTDOWN` | triggers graceful shutdown of the node. Remaining transactions are finalised. |
-
+| `DISTRIBUTE <TYPE> <PAYLOAD>` | this leads to a node sending the payload to all neighbours |
 
 The client can be used to execute control commands, e.g.:
 ```
 go run cmd/client/main.go --type="CONTROL" --payload="SHUTDOWN" --connect "127.0.0.1:4000"
 ```
 connects to the node running on localhost port 4000
+
+## Experiments
+
+### Rumor distribution
+All rumors are of message type `RUMOR`.
+
+One node receives a rumor following the payload `<C>;<CONTENT>` where `C` indicates the threshold at which the node accepts the rumor (e.g. `C = 2` leads to a node trusting the rumor when it receives it from 2 neighbors).
+Once a node receives an unknown rumor, it propagates it to all neighbours but the sending one. If it is known it just increases the internal counter.
+
+The initial rumor is started via the control message, e.g. `DISTRIBUTE RUMOR 2;rumor2trust`.
