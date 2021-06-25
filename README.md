@@ -2,6 +2,13 @@
 > This project is based on a distributed systems course at my university, tailed towards bringing better understandings
 > for communication and state in those.
 
+## Starting up multiple nodes
+
+The Jsonnet template `hack/gen-launch.jsonnet` allows generation of arbitrary launch scripts up to 999 nodes (afterwards there will be port collisions).
+The `make gen` command generates a random graph, node configuration and a `launch.sh` which will start each node in a dedicated tmux pane for easy debugging.
+
+The helper function `make startup` starts all nodes and initiates the communication flow, `make shutdown` stops all processes. The tmux session can be closed with `<CTRL-B>:kill-session` which removes the tedious task of clearing 10+ tmux panes.
+
 ## Communication Protocl
 > The communication protocol is intended to be as simple as possible
 
@@ -19,6 +26,17 @@ type Message struct {
 }
 ```
 For a message to be valid, all fields need to be set. The `github.com/xvzf/vaa/pkg/com` package contains a dispatcher (aka receiving server dispatching messages to a go channel) and a client for constructing and sending messages. A message UUID is generated whenever the client is used. Sending the same message multiple times, be it to multiple targets or to the same target, the UUID changes with every transferred message. This ensures tracability and uniqueness of messages.
+
+## Discovery messages
+> Discovery messages are used for discovering neighbours/marking them as active
+
+All discovery messages are of message type `DISCOVERY` and carry the operation as payload.
+
+Supported payload operations:
+
+| Operation  | Action                                                                                                                      |
+|------------|-----------------------------------------------------------------------------------------------------------------------------|
+| `HELLO`    | Transmits own UID to a neighbor node, allowing them to register it as active, initiated with the `STARTUP` control command  |
 
 
 ## Control messages

@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/xvzf/vaa/internal/node"
 	"github.com/xvzf/vaa/pkg/com"
+	"github.com/xvzf/vaa/pkg/neigh"
 )
 
 func init() {
@@ -22,8 +25,21 @@ func init() {
 	// debug := flag.Bool("debug", true, "enable debug mode")
 	zerolog.SetGlobalLevel(zerolog.DebugLevel)
 
-	// Start metric server
+}
+
+func main() {
+	var wg sync.WaitGroup
+	var neighs *neigh.Neighs
+	var err error
+
+	config := flag.String("config", "./config", "path to config file")
+	graph := flag.String("graph", "", "path to graph")
+	uid := flag.Uint("uid", 1, "Node UID")
 	metric := flag.String("metric", ":9111", "metric endpoint")
+
+	flag.Parse()
+
+	// Start metric server
 	log.Info().Msgf("Starting metric endpoint at %s/metrics", *metric)
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
@@ -31,26 +47,46 @@ func init() {
 			log.Err(err).Msg("Failed serving metrics endpoint")
 		}
 	}()
-}
 
-func main() {
-	var wg sync.WaitGroup
+	// Load configuration / construct neighbors for thise node
+	c, err := neigh.LoadConfig(*config)
+	if err != nil {
+		log.Err(err).Msg("Failed to load configuration")
+		return
+	}
+	netAddr, ok := c.Nodes[*uid]
+	if !ok {
+		log.Error().Msg("UID not in config")
+		return
+	}
+	netAddrSplit := strings.Split(netAddr, ":")
+	if len(netAddrSplit) != 2 {
+		log.Error().Msg("UID network address invalid, has to follow <host>:<port>")
+		return
+	}
+	listen := fmt.Sprintf(":%s", netAddrSplit[1])
 
-	config := flag.String("config", "./config", "path to config file")
-	listen := flag.String("listen", ":4000", "listen port")
+	if *graph != "" {
+		log.Info().Msgf("Loading node config from configuration file + communication graph")
+		neighs, err = neigh.NeighsFromConfigAndGraph(*uid, *config, *graph)
+	} else {
+		log.Info().Msgf("Loading node config from configuration file")
+		neighs, err = neigh.NeighsFromConfig(*config)
+	}
+	if err != nil {
+		log.Err(err).Msg("Failed to load configuration")
+		return
+	}
 
-	flag.Parse()
-
-	log.Info().Msgf("Loading configuration from file %s", *config)
-	// Load configuration file
+	log.Info().Msgf("Loaded configuration for UID %d", *uid)
 
 	// Communication channels + Dispatcher
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	defer cancelCtx()
 
 	recvChan := make(chan *com.Message, 1)
-	d := com.NewDispatcher(*listen, recvChan)
-	n := node.New(1, cancelCtx)
+	d := com.NewDispatcher(listen, recvChan)
+	n := node.New(*uid, cancelCtx, neighs)
 
 	// Start message dispatcher (aka receiver)
 	wg.Add(1)
@@ -84,5 +120,4 @@ func main() {
 	}
 	wg.Wait() // Wait for listeners/handlers to shutdown
 	log.Info().Msg("ByeBye")
-
 }
