@@ -2,6 +2,9 @@
 > This project is based on a distributed systems course at my university, tailed towards bringing better understandings
 > for communication and state in those.
 
+TODO:
+- [ ] Rumor experiment; 20 iterations with different n, m, c
+
 ## Starting up multiple nodes
 
 The Jsonnet template `hack/gen-launch.jsonnet` allows generation of arbitrary launch scripts up to 999 nodes (afterwards there will be port collisions).
@@ -67,3 +70,5 @@ One node receives a rumor following the payload `<C>;<CONTENT>` where `C` indica
 Once a node receives an unknown rumor, it propagates it to all neighbours but the sending one. If it is known it just increases the internal counter.
 
 The initial rumor is started via the control message, e.g. `DISTRIBUTE RUMOR 2;rumor2trust`.
+
+
