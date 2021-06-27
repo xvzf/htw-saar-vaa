@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"os"
+	"sync"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -36,11 +37,18 @@ func main() {
 			log.Err(err).Msg("Failed loading config")
 			return
 		}
+		// Try to send to all nodes at roughly the same time
+		var wg sync.WaitGroup
 		for _, netaddr := range c.Nodes {
-			if err := com.Send(netaddr, msg); err != nil {
-				log.Err(err).Msg("Request failed")
-			}
+			wg.Add(1)
+			go func(addr string) {
+				defer wg.Done()
+				if err := com.Send(addr, msg); err != nil {
+					log.Err(err).Msg("Request failed")
+				}
+			}(netaddr)
 		}
+		wg.Wait()
 	} else {
 		// Send request to single node
 		if err := com.Send(*connect, msg); err != nil {

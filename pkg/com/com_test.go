@@ -16,7 +16,6 @@ func TestCommunication_valid(t *testing.T) {
 	net_addr := "127.0.0.1:33333"
 	test_msg := &Message{
 		UUID:      strPointer(uuid.NewString()),
-		TTL:       uintPointer(1),
 		Timestamp: timePointer(time.Now().UTC()),
 		SourceUID: uintPointer(2),
 		Type:      strPointer("CONTROL"),
@@ -51,7 +50,6 @@ func TestCommunication_valid(t *testing.T) {
 
 	// Compare if message content has been passed
 	assert.Equal(t, *test_msg.UUID, *recv_msg.UUID)
-	assert.Equal(t, *test_msg.TTL, *recv_msg.TTL)
 	assert.Equal(t, *test_msg.Timestamp, *recv_msg.Timestamp)
 	assert.Equal(t, *test_msg.SourceUID, *recv_msg.SourceUID)
 	assert.Equal(t, *test_msg.Type, *recv_msg.Type)

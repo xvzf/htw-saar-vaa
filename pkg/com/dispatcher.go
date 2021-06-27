@@ -50,15 +50,14 @@ func (c *listenConfig) handleConn(ctx context.Context, conn net.Conn) {
 	}
 
 	// All OK, log full message content
-	log.Info().
+	log.Debug().
 		Str("msg_direction", "incoming").
 		Str("req_id", *msg.UUID).
-		Uint("ttl", *msg.TTL).
 		Time("timestamp", *msg.Timestamp).
 		Uint("src_uid", *msg.SourceUID).
 		Str("type", *msg.Type).
 		Str("payload", *msg.Payload).
-		Msg("sent")
+		Msg("(<<<)")
 
 	// Propagate the message to channel in case our context is not closed yet
 	select {
@@ -103,6 +102,7 @@ func (c *listenConfig) Run(ctx context.Context) error {
 		}
 
 		// Dispatch connection to connection handler
-		go c.handleConn(ctx, conn)
+		// go c.handleConn(ctx, conn)
+		c.handleConn(ctx, conn)
 	}
 }

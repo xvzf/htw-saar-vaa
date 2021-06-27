@@ -23,7 +23,8 @@ func init() {
 	// Setup logging
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 	// debug := flag.Bool("debug", true, "enable debug mode")
-	zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	// zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 
 }
 
@@ -87,6 +88,12 @@ func main() {
 	recvChan := make(chan *com.Message, 1)
 	d := com.NewDispatcher(listen, recvChan)
 	n := node.New(*uid, cancelCtx, neighs)
+
+	// Register node extensions
+	n.Register(node.NewControlExtension())
+	n.Register(node.NewDiscoveryExtension())
+	n.Register(node.NewRumorExtension())     // Rumor experiment
+	n.Register(node.NewConsensusExtension()) // Consensus experiment
 
 	// Start message dispatcher (aka receiver)
 	wg.Add(1)

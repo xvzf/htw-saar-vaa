@@ -11,12 +11,11 @@ import (
 
 func Send(target string, msg *Message) error {
 	// Assign UUID to outgoing request for easier tracing in other nodes
-	u := uuid.New()
-	ustr := u.String()
-	msg.UUID = &ustr
+	uuid := uuid.NewString()[0:8]
+	msg.UUID = &uuid
 
 	log.Debug().
-		Str("req_id", u.String()).
+		Str("req_id", uuid).
 		Msgf("Sending request to %s", target)
 
 	// Time limit so we don't go stale
@@ -36,12 +35,11 @@ func Send(target string, msg *Message) error {
 	log.Info().
 		Str("msg_direction", "outgoing").
 		Str("req_id", *msg.UUID).
-		Uint("ttl", *msg.TTL).
 		Time("timestamp", *msg.Timestamp).
 		Uint("src_uid", *msg.SourceUID).
 		Str("type", *msg.Type).
 		Str("payload", *msg.Payload).
-		Msg("sent")
+		Msgf(">>> %s", target)
 
 	return nil
 }

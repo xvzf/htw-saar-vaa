@@ -15,7 +15,6 @@ func TestMessage_isValid(t *testing.T) {
 			"Message OK",
 			&Message{
 				UUID:      new(string),
-				TTL:       new(uint),
 				Timestamp: new(time.Time),
 				SourceUID: new(uint),
 				Type:      new(string),
@@ -27,19 +26,6 @@ func TestMessage_isValid(t *testing.T) {
 			"UUID missing",
 			&Message{
 				UUID:      nil,
-				TTL:       new(uint),
-				Timestamp: new(time.Time),
-				SourceUID: new(uint),
-				Type:      new(string),
-				Payload:   new(string),
-			},
-			true,
-		},
-		{
-			"Missing TTL",
-			&Message{
-				UUID:      new(string),
-				TTL:       nil,
 				Timestamp: new(time.Time),
 				SourceUID: new(uint),
 				Type:      new(string),
@@ -51,7 +37,6 @@ func TestMessage_isValid(t *testing.T) {
 			"Missing Timestamp",
 			&Message{
 				UUID:      new(string),
-				TTL:       new(uint),
 				Timestamp: nil,
 				SourceUID: new(uint),
 				Type:      new(string),
@@ -63,7 +48,6 @@ func TestMessage_isValid(t *testing.T) {
 			"Missing SourceUID",
 			&Message{
 				UUID:      new(string),
-				TTL:       new(uint),
 				Timestamp: new(time.Time),
 				SourceUID: nil,
 				Type:      new(string),
@@ -75,7 +59,6 @@ func TestMessage_isValid(t *testing.T) {
 			"Missign Type",
 			&Message{
 				UUID:      new(string),
-				TTL:       new(uint),
 				Timestamp: new(time.Time),
 				SourceUID: new(uint),
 				Type:      nil,
@@ -87,7 +70,6 @@ func TestMessage_isValid(t *testing.T) {
 			"Missing Payload",
 			&Message{
 				UUID:      new(string),
-				TTL:       new(uint),
 				Timestamp: new(time.Time),
 				SourceUID: new(uint),
 				Type:      new(string),

@@ -1,16 +1,24 @@
-NUM_NODES ?= "6"
-NUM_EDGES ?= "10"
+NUM_NODES ?= "11"
+NUM_EDGES ?= "13"
 
 RUMOR ?= "SomeRumor12345678"
 RUMOR_C ?= "3"
 
 DOCKER_IMAGE = "quay.io/xvzf/vaa:latest"
 
+launch: gen
+	sh launch.sh
+
 startup:
 	go run ./cmd/client/main.go --config="./config.txt" --type="CONTROL" --payload="STARTUP"
 
 rumor:
 	go run ./cmd/client/main.go --connect="[::1]:4006" --type="CONTROL" --payload="DISTRIBUTE RUMOR ${RUMOR_C};${RUMOR}"
+
+consensus: consensus-leader-elect
+
+consensus-leader-elect:
+	go run ./cmd/client/main.go --config="./config.txt" --type="CONSENSUS" --payload="coordinator"
 
 shutdown:
 	go run ./cmd/client/main.go --config="./config.txt" --type="CONTROL" --payload="SHUTDOWN"
@@ -27,4 +35,3 @@ docker-build:
 
 docker-push:
 	docker push ${DOCKER_IMAGE}
-
