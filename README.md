@@ -52,7 +52,7 @@ Supported payload operations:
 |--------------------------|----------------------------------------------------------------------------------------|
 | `coordinator`            | Triggers leader-election                                                               |
 | `explore;<node-id>`      | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
-| `child;<node-id>;<0|1>`  | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
+| `child;<node-id>;<0\|1>`  | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
 | `echo;<node-id>`         | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
 | `leader;<node-id>`       | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
 
