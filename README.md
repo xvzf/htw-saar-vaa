@@ -101,7 +101,7 @@ The largest `node-id` should win.
 Per `node-id`, each node keeps track on how many explores have been received, how many echos as well as what neighbours are its childs in a spanning tree.
 
 To do this, a node initiates the leader election by sending an `explore <node-id>` to all neighbors and sets its internal highest seen `node-id` (further referenced as `m`) to its own.
-Once a node receives the `explore <node-id>` message the first time, it stores the sender UID as `srcUID` (parent in spanning tree) responds with `child <node-id>;1` to the node with the uid `srcUID` and sets the `received_explore` counter to 1. In case the `explore <node-id> was already seen, it sends the message `child <node-id>;0` and increase the internal `received_explore` counter.
+Once a node receives the `explore <node-id>` message the first time, it stores the sender UID as `srcUID` (parent in spanning tree) responds with `child <node-id>;1` to the node with the uid `srcUID` and sets the `received_explore` counter to 1. In case the `explore <node-id>` was already seen, it sends the message `child <node-id>;0` and increase the internal `received_explore` counter.
 
 Once a node received a `child <node-id>;<1|0>`, it increases the internal counter `received_parentmsg` and in case the response is `1` it also stores the `SourceID` of the message in the internal array `child_uids`. This array is later used to propagate messages along the spanning tree.
 
