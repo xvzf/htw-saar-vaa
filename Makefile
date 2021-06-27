@@ -1,5 +1,5 @@
-NUM_NODES ?= "6"
-NUM_EDGES ?= "10"
+NUM_NODES ?= "7"
+NUM_EDGES ?= "8"
 
 RUMOR ?= "SomeRumor12345678"
 RUMOR_C ?= "3"
@@ -11,6 +11,9 @@ startup:
 
 rumor:
 	go run ./cmd/client/main.go --connect="[::1]:4006" --type="CONTROL" --payload="DISTRIBUTE RUMOR ${RUMOR_C};${RUMOR}"
+
+leader-elect-simple:
+	go run ./cmd/client/main.go --connect="[::1]:4005" --type="CONTROL" --payload="DISTRIBUTE CONSENSUS explore;5"
 
 shutdown:
 	go run ./cmd/client/main.go --config="./config.txt" --type="CONTROL" --payload="SHUTDOWN"

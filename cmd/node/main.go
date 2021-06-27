@@ -23,7 +23,8 @@ func init() {
 	// Setup logging
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 	// debug := flag.Bool("debug", true, "enable debug mode")
-	zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	// zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 
 }
 

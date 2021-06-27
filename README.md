@@ -30,7 +30,7 @@ type Message struct {
 ```
 For a message to be valid, all fields need to be set. The `github.com/xvzf/vaa/pkg/com` package contains a dispatcher (aka receiving server dispatching messages to a go channel) and a client for constructing and sending messages. A message UUID is generated whenever the client is used. Sending the same message multiple times, be it to multiple targets or to the same target, the UUID changes with every transferred message. This ensures tracability and uniqueness of messages.
 
-## Discovery messages
+## Discovery Messages
 > Discovery messages are used for discovering neighbours/marking them as active
 
 All discovery messages are of message type `DISCOVERY` and carry the operation as payload.
@@ -42,7 +42,22 @@ Supported payload operations:
 | `HELLO`    | Transmits own UID to a neighbor node, allowing them to register it as active, initiated with the `STARTUP` control command  |
 
 
-## Control messages
+## Distributed Consensus Messages
+> Experimenting with leader-election in unknown network structures, distributed agreement on values
+
+All discovery messages are of message type `CONSENSUS` and carry the operation as payload.
+
+Supported payload operations:
+
+| Operation              | Action                                                                                 |
+|------------------------|----------------------------------------------------------------------------------------|
+| `explore <node-id>`    | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
+| `echo <node-id>`       | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
+| `echo <node-id>`       | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
+
+
+
+## Control Messages
 > Control messages are only for `client -> cluster node` communication.
 
 All control messages are of message type `CONTROL` and carry the operation as payload.
@@ -72,3 +87,18 @@ Once a node receives an unknown rumor, it propagates it to all neighbours but th
 The initial rumor is started via the control message, e.g. `DISTRIBUTE RUMOR 2;rumor2trust`.
 
 
+### Distributed Concensus
+
+#### Scenario
+
+##### Election
+
+A random number of nodes starts a distributed election based on an echo algorithm. The winner will start the distributed concensus
+An `explore <node-id>` is send to all edges, once a node received an `expore <node-id>` on all edges, it sends an `echo <node-id>` to the initial receiving edge (this effectively feedbacks the echo across the spanning tree of the distributed network).
+All nodes contain an internal counter (`M`) which is on startup set to `-inf`. `<node-id> > M` overrides `M` and stops the propagation of either *echo* or *explore*. 
+
+##### Concensus
+
+Multiple (`n`) nodes try to align on a common value, without centralised entity. There are `1-m` valuesa are available.
+On concensus start, every node (`P_k`) selects one value as its favourite.
+During the election, nodes communicate only in pairs based on their communication graph.

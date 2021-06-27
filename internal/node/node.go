@@ -3,9 +3,11 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog/log"
 	"github.com/xvzf/vaa/pkg/com"
@@ -18,15 +20,30 @@ type Handler interface {
 
 // handler holds internal information & datastructures for a node
 type handler struct {
-	uid     uint
-	neighs  *neigh.Neighs
-	exit    context.CancelFunc
-	wg      sync.WaitGroup
-	rumor   *rumor
-	started bool
+	uid               uint
+	neighs            *neigh.Neighs
+	exit              context.CancelFunc
+	wg                sync.WaitGroup
+	rumor             *rumor
+	consensusElection *consensusElection
+	started           bool
+}
+
+// uidFromPayload parses the payload following `<some-extruction> <uid>`
+func uidFromPayload(msg *com.Message) (uint, error) {
+	ps := strings.Split(*msg.Payload, ";")
+	if len(ps) != 2 {
+		return 0, errors.New("payload is not of format <type><space><node-id>")
+	}
+	uid, err := strconv.Atoi(ps[1])
+	if err != nil {
+		return 0, err
+	}
+	return uint(uid), nil
 }
 
 func New(uid uint, exitFunc context.CancelFunc, neighs *neigh.Neighs) Handler {
+	// Init datastructures of the node
 	return &handler{
 		uid:     uid,
 		exit:    exitFunc,
@@ -36,6 +53,9 @@ func New(uid uint, exitFunc context.CancelFunc, neighs *neigh.Neighs) Handler {
 		rumor: &rumor{
 			counter: make(map[string]int),
 			trusted: make(map[string]bool),
+		},
+		consensusElection: &consensusElection{
+			echoFrom: make(map[uint]bool),
 		},
 	}
 }
@@ -58,8 +78,19 @@ func (h *handler) Run(ctx context.Context, c chan *com.Message) error {
 	}
 }
 
-// handle distributes incoming messages
+// handle routes incoming messages to the corresponding handlers
 func (h *handler) handle(msg *com.Message) error {
+	// Log incoming message (in addition to the dispatcher, as the dispatcher runs async and uses channels for interfacing with the node process)
+	log.Info().
+		Str("msg_direction", "incoming").
+		Str("req_id", *msg.UUID).
+		Uint("ttl", *msg.TTL).
+		Time("timestamp", *msg.Timestamp).
+		Uint("src_uid", *msg.SourceUID).
+		Str("type", *msg.Type).
+		Str("payload", *msg.Payload).
+		Msg("<<<")
+
 	// Mark processing start/end; this allows us to cracefully shutdown on context cancelation
 	h.wg.Add(1)
 	defer h.wg.Done()
@@ -73,6 +104,8 @@ func (h *handler) handle(msg *com.Message) error {
 		return h.handleDiscovery(msg)
 	case "RUMOR":
 		return h.handleRumor(msg)
+	case "CONSENSUS":
+		return h.handleConsensus(msg)
 	}
 	log.Warn().Uint("uid", h.uid).Uint("src_uid", *msg.SourceUID).Str("req_id", *msg.UUID).Msgf("Message type `%s` not supported", *msg.Type)
 	return nil
@@ -92,11 +125,11 @@ func (h *handler) handleControl(msg *com.Message) error {
 	// Startup
 	case payload == "STARTUP": // Startup messages
 		log.Info().Uint("uid", h.uid).Str("req_id", *msg.UUID).Msgf("Initiated node startup")
-		go h.handleControl_startup(msg)
+		h.handleControl_startup(msg)
 		return nil
 	case strings.HasPrefix(payload, "DISTRIBUTE"): // Distribute messages
 		log.Info().Uint("uid", h.uid).Str("req_id", *msg.UUID).Msgf("Disstribute messages")
-		go h.handleControl_distribute(msg)
+		h.handleControl_distribute(msg)
 		return nil
 	}
 
@@ -147,9 +180,7 @@ func (h *handler) handleControl_distribute(msg *com.Message) error {
 
 	toSend := com.Msg(h.uid, t, p)
 
-	// Send HELLO to all neighbors
 	for nuid, netaddr := range h.neighs.Nodes {
-		log.Info().Uint("uid", h.uid).Msgf("Sending %s to %d", t, nuid)
 		if err := com.Send(netaddr, toSend); err != nil {
 			log.Err(err).Uint("uid", h.uid).Msgf("Failed sending %s to %d", t, nuid)
 		}
@@ -216,4 +247,130 @@ func (h *handler) handleRumor(msg *com.Message) error {
 			Msgf("Trusted since %d shares", s-c)
 	}
 	return nil
+}
+
+// handleConsensus handles incoming consensus events
+func (h *handler) handleConsensus(msg *com.Message) error {
+	log.Info().Uint("uid", h.uid).Uint("src_uid", *msg.SourceUID).Str("req_id", *msg.UUID).Msgf("Handling consensus message")
+
+	switch payload := *msg.Payload; {
+	case strings.HasPrefix(payload, "explore"):
+		h.handleConsensus_explore(msg)
+	case strings.HasPrefix(payload, "echo"):
+		h.handleConsensus_echo(msg)
+	}
+
+	return nil
+}
+
+// handleConsensus_explore contains leader-elect explore logic
+func (h *handler) handleConsensus_explore(msg *com.Message) error {
+	log.Info().Uint("uid", h.uid).Uint("src_uid", *msg.SourceUID).Str("req_id", *msg.UUID).Msgf("Handling consensus leader-elect explore")
+	// Extract explore UID from payload
+	euid, err := uidFromPayload(msg)
+	if err != nil {
+		log.Err(err).Uint("uid", h.uid).Uint("src_uid", *msg.SourceUID).Str("req_id", *msg.UUID).Msgf("Invalid payload")
+	}
+
+	// Register explore; propagate if it is > M
+	if h.consensusElection.M < int(euid) {
+		log.Info().Uint("uid", h.uid).Uint("src_uid", *msg.SourceUID).Str("req_id", *msg.UUID).
+			Msgf("First explore for %d, evicting %d", euid, h.consensusElection.M)
+		h.consensusElection.M = int(euid)
+		h.consensusElection.exploreFrom = make(map[uint]bool)
+		h.consensusElection.exploreFrom[*msg.SourceUID] = true
+		h.consensusElection.firstNUID = *msg.SourceUID
+
+		// Propagate the explore
+		pMsg := com.MsgPropagate(h.uid, msg)
+		for nuid, netaddr := range h.neighs.Nodes {
+			if nuid == *msg.SourceUID {
+				// Don't send back explore
+				continue
+			}
+			if err = com.Send(netaddr, pMsg); err != nil {
+				log.Err(err).Uint("uid", h.uid).Uint("src_uid", *msg.SourceUID).Str("req_id", *msg.UUID).Msgf("Failed to send echo")
+			}
+		}
+
+	} else if h.consensusElection.M == int(euid) {
+		// Consecutive receive
+		h.consensusElection.exploreFrom[*msg.SourceUID] = true
+	} else {
+		// Ignoring explore
+		log.Info().Uint("uid", h.uid).Uint("src_uid", *msg.SourceUID).Str("req_id", *msg.UUID).
+			Msgf("Ignoring explore for %d, in favour of %d", euid, h.consensusElection.M)
+		return nil
+	}
+
+	// Check if we should send an echo
+	if diff := len(h.neighs.Nodes) - len(h.consensusElection.exploreFrom); diff > 0 {
+		log.Info().Uint("uid", h.uid).Uint("src_uid", *msg.SourceUID).Str("req_id", *msg.UUID).
+			Msgf("Missing explores for %d echo: %d", euid, diff)
+	} else {
+		log.Info().Uint("uid", h.uid).Uint("src_uid", *msg.SourceUID).Str("req_id", *msg.UUID).
+			Msgf("Sending echo for %d", euid)
+		// Construct echo message and send it
+		eMsg := com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("echo;%d", euid))
+		if err = com.Send(h.neighs.Nodes[h.consensusElection.firstNUID], eMsg); err != nil {
+			log.Err(err).Uint("uid", h.uid).Uint("src_uid", *msg.SourceUID).Str("req_id", *msg.UUID).Msgf("Failed to send echo")
+			return err
+		}
+	}
+
+	return nil
+}
+
+// handleConsensus_echo performs the echo logic
+func (h *handler) handleConsensus_echo(msg *com.Message) error {
+	log.Info().Uint("uid", h.uid).Uint("src_uid", *msg.SourceUID).Str("req_id", *msg.UUID).Msgf("Handling consensus leader-elect echo")
+
+	// Extract elected UID from payload
+	euid, err := uidFromPayload(msg)
+	if err != nil {
+		log.Err(err).Uint("uid", h.uid).Uint("src_uid", *msg.SourceUID).Str("req_id", *msg.UUID).Msgf("Invalid payload")
+	}
+
+	if euid < uint(h.consensusElection.M) {
+		log.Info().Uint("uid", h.uid).Uint("src_uid", *msg.SourceUID).Str("req_id", *msg.UUID).Msgf("Evicting echo with uid %d", euid)
+		return nil
+	}
+
+	// We're the winner?
+	if euid == h.uid {
+		h.consensusElection.echoFrom[*msg.SourceUID] = true
+		log.Info().Uint("uid", h.uid).Uint("src_uid", *msg.SourceUID).Str("req_id", *msg.UUID).
+			Msgf("Marked edge as echo received")
+
+		// We won the election, launch consensusMain
+		if len(h.consensusElection.echoFrom) == len(h.neighs.Nodes) && !h.consensusElection.wonElection {
+			log.Info().Uint("uid", h.uid).Uint("src_uid", *msg.SourceUID).Str("req_id", *msg.UUID).
+				Msgf("Election succeeded, I'm now the consensus leader")
+			h.consensusElection.wonElection = true // don't start it multiple times
+			go h.consensusMain(context.Background())
+		}
+
+		return nil
+	}
+
+	// If >= M forward to receiving edge
+	h.consensusElection.M = int(euid)
+	log.Info().Uint("uid", h.uid).Uint("src_uid", *msg.SourceUID).Str("req_id", *msg.UUID).
+		Msgf("Sending echo with uid %d to node with uid", euid, h.consensusElection.firstNUID)
+	rMsg := com.Msg(h.uid, *msg.Type, *msg.Payload) // copy message
+
+	err = com.Send(h.neighs.Nodes[h.consensusElection.firstNUID], rMsg)
+	if err != nil {
+		log.Err(err).Uint("uid", h.uid).Uint("src_uid", *msg.SourceUID).Str("req_id", *msg.UUID).Msgf("Failed propagating echo")
+	}
+	return nil
+}
+
+// consensusMain is launched on the node with successful leader election
+func (h *handler) consensusMain(ctx context.Context) {
+	log.Info().Msg("Starting Consensus leader")
+	for {
+		log.Info().Msg("Starting Consensus leader: alive")
+		time.Sleep(1 * time.Second)
+	}
 }
