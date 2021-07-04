@@ -86,6 +86,7 @@ Supported payload operations:
 | `stateResponse;uid;<t|f>;<count_msg_in>;<count_msg_out>`  | Part of double counting with echo-based algorithm (see Experiments for further detail) |
 
 > Collection
+
 | Operation                                     | Action                                                                                   |
 |-----------------------------------------------|------------------------------------------------------------------------------------------|
 | `collectRequest`                              | Part of result collection with echo-based algorithm (see Experiments for further detail) |
