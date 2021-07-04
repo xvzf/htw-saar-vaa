@@ -40,24 +40,6 @@ Supported payload operations:
 |------------|-----------------------------------------------------------------------------------------------------------------------------|
 | `HELLO`    | Transmits own UID to a neighbor node, allowing them to register it as active, initiated with the `STARTUP` control command  |
 
-
-## Distributed Consensus Messages
-> Experimenting with leader-election in unknown network structures, distributed agreement on values
-
-All discovery messages are of message type `CONSENSUS` and carry the operation as payload.
-
-Supported payload operations:
-
-| Operation                | Action                                                                                 |
-|--------------------------|----------------------------------------------------------------------------------------|
-| `coordinator`            | Triggers leader-election                                                               |
-| `explore;<node-id>`      | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
-| `child;<node-id>;<0\|1>`  | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
-| `echo;<node-id>`         | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
-| `leader;<node-id>`       | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
-
-
-
 ## Control Messages
 > Control messages are only for `client -> cluster node` communication.
 
@@ -76,6 +58,39 @@ The client can be used to execute control commands, e.g.:
 go run cmd/client/main.go --type="CONTROL" --payload="SHUTDOWN" --connect "127.0.0.1:4000"
 ```
 connects to the node running on localhost port 4000
+
+
+## Distributed Consensus Messages
+> Experimenting with leader-election in unknown network structures, distributed agreement on values
+
+All discovery messages are of message type `CONSENSUS` and carry the operation as payload.
+
+Supported payload operations:
+
+> Leader election
+
+| Operation                                     | Action                                                                                 |
+|-----------------------------------------------|----------------------------------------------------------------------------------------|
+| `coordinator`                                 | Triggers leader-election                                                               |
+| `explore;<node-id>`                           | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
+| `child;<node-id>;<0\|1>`                      | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
+| `echo;<node-id>`                              | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
+| `leader;<node-id>`                            | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
+| `leader;<node-id>`                            | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
+
+> Double Counting (Termination)
+
+| Operation                                                 | Action                                                                                 |
+|-----------------------------------------------------------|----------------------------------------------------------------------------------------|
+| `stateRequest;uid`                                        | Part of double counting with echo-based algorithm (see Experiments for further detail) |
+| `stateResponse;uid;<t|f>;<count_msg_in>;<count_msg_out>`  | Part of double counting with echo-based algorithm (see Experiments for further detail) |
+
+> Collection
+| Operation                                     | Action                                                                                   |
+|-----------------------------------------------|------------------------------------------------------------------------------------------|
+| `collectRequest`                              | Part of result collection with echo-based algorithm (see Experiments for further detail) |
+| `collect;<true|false>;timestamp`              | Part of result collection with echo-based algorithm (see Experiments for further detail) |
+
 
 ## Experiments
 
@@ -122,3 +137,14 @@ The now constructed, distributed spanning tree can later be used for additional 
 Multiple (`n`) nodes try to align on a common value, without centralised entity. There are `1-m` valuesa are available.
 On concensus start, every node (`P_k`) selects one value as its favourite.
 During the election, nodes communicate only in pairs based on their communication graph.
+
+
+> Termination based on Double Counting Method
+
+In order to allow termination detection, all nodes keep track of incoming/outgoing messages for the voting process.
+The elected coordinator regulary checks the termination state using the double counting message.
+The coordinator sends a request along the spanning tree asking to return the state of the network.
+Receiving nodes propagate the request to its childs and wait for a response of those.
+Incoming/Outgoing message counters are summed up.
+The passive/active state is represented in the first part of the `state` response and is *ORed* for all childs and the receiving node before propagating.
+This allows to make sure all network nodes are in a passive state; e.g. `node_1_active('false') && node_2_active('false') && node_3_active('true') = true`.
