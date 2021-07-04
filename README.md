@@ -83,14 +83,14 @@ Supported payload operations:
 | Operation                                                 | Action                                                                                 |
 |-----------------------------------------------------------|----------------------------------------------------------------------------------------|
 | `stateRequest;uid`                                        | Part of double counting with echo-based algorithm (see Experiments for further detail) |
-| `stateResponse;uid;<t|f>;<count_msg_in>;<count_msg_out>`  | Part of double counting with echo-based algorithm (see Experiments for further detail) |
+| `stateResponse;uid;<t\|f>;<count_msg_in>;<count_msg_out>`  | Part of double counting with echo-based algorithm (see Experiments for further detail) |
 
-> Collection
+> Collection/Voting
 
 | Operation                                     | Action                                                                                   |
 |-----------------------------------------------|------------------------------------------------------------------------------------------|
 | `collectRequest`                              | Part of result collection with echo-based algorithm (see Experiments for further detail) |
-| `collect;<true|false>;timestamp`              | Part of result collection with echo-based algorithm (see Experiments for further detail) |
+| `collect;<t\|f>;timestamp`                    | Part of result collection with echo-based algorithm (see Experiments for further detail) |
 
 
 ## Experiments
