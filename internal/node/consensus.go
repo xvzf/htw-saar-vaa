@@ -3,18 +3,45 @@ package node
 import (
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 	"github.com/xvzf/vaa/pkg/com"
 )
 
 type consensusState struct {
+	sync.Mutex
 	active        bool
 	msgInCounter  int
 	msgOutCounter int
+}
+
+func (s *consensusState) Received() {
+	s.Lock()
+	defer s.Unlock()
+	s.msgInCounter = s.msgInCounter + 1
+}
+
+func (s *consensusState) Sent() {
+	s.Lock()
+	defer s.Unlock()
+	s.msgOutCounter = s.msgOutCounter + 1
+}
+
+func (s *consensusState) Add(s2 *consensusState) {
+	s.Lock()
+	defer s.Unlock()
+	s2.Lock()
+	defer s2.Unlock()
+	// Goroutine safe addition
+	s.active = s.active || s2.active
+	s.msgInCounter = s.msgInCounter + s2.msgInCounter
+	s.msgOutCounter = s.msgOutCounter + s2.msgOutCounter
 }
 
 type consensus struct {
@@ -34,12 +61,20 @@ type consensus struct {
 	// Echo communication for state/collect requests.
 	echo map[string]int // map[<req_uid>]<counter_recv_messages>
 
+	// Alignment on a common discrete time
+	sVote    int // number of nodes initiating the voting process
+	pNeighs  int // number of random neighs to agree on a time
+	aMax     int // voting rounds accepted
+	aCurrent int // voting rounds accepted
+	tK       int // discrete time of this node
+
 	// State
-	state    *consensusState            // This node state
-	accState map[string]*consensusState // Accumulated state for state requests
+	state        *consensusState            // This node state
+	accState     map[string]*consensusState // Accumulated state for state requests
+	accStateDone map[string]bool            // Accumulated state for state requests
 }
 
-func NewConsensusExtension() (Extension, string) {
+func NewConsensusExtension(s, m, p, aMax int) (Extension, string) {
 	rand.Seed(time.Now().UnixNano())
 	wantLeader := rand.Intn(2) == 1 // 50% chance of being true
 	log.Info().Msgf("Wants to be leader: %t", wantLeader)
@@ -58,13 +93,22 @@ func NewConsensusExtension() (Extension, string) {
 		// Echo communication
 		echo: map[string]int{},
 
+		// Discrete timestamp
+		sVote:    s,
+		tK:       rand.Intn(m) + 1,
+		aMax:     aMax,
+		aCurrent: 0,
+		pNeighs:  p,
+
 		// State
 		state: &consensusState{
 			active:        false,
 			msgInCounter:  0,
 			msgOutCounter: 0,
 		},
-		accState: make(map[string]*consensusState),
+
+		accState:     make(map[string]*consensusState),
+		accStateDone: make(map[string]bool),
 	}, "CONSENSUS"
 }
 
@@ -85,28 +129,112 @@ func (c *consensus) Handle(h *handler, msg *com.Message) error {
 		return c.handle_stateRequest(h, msg)
 	case strings.HasPrefix(payload, "stateResponse"): // Check if payload is allowed
 		return c.handle_stateResponse(h, msg)
+	// Vote requests
+	case strings.HasPrefix(payload, "voteBegin"): // Check if payload is allowed
+		return c.handle_voteBegin(h, msg)
+	case strings.HasPrefix(payload, "proposalResponse"): // Check if payload is allowed
+		return c.handle_proposalResponse(h, msg)
+	case strings.HasPrefix(payload, "proposal"): // Check if payload is allowed
+		return c.handle_proposal(h, msg)
 	}
-	log.Warn().Msg("Payload not supported")
-	return nil
+
+	return fmt.Errorf("payload `%s` not supported", *msg.Payload)
+}
+
+func randNeighsUnique(in map[uint]string, p int) []string {
+	n := []string{}
+	r := []string{}
+	randNodes := map[string]struct{}{}
+
+	for _, v := range in {
+		n = append(n, v)
+	}
+
+	// safety check (doesn't cover all cases)
+	if p > len(n) {
+		log.Error().Msgf("p (%d) > number of available nodes (%d)", p, len(n))
+		return r
+	}
+
+	// Unique random neighs
+	for len(randNodes) < p {
+		randNodes[n[rand.Intn(len(n))]] = struct{}{}
+	}
+
+	// Convert to array again
+	for v := range randNodes {
+		r = append(n, v)
+	}
+
+	return r
 }
 
 // leader is the control method
 func (c *consensus) leader(h *handler) error {
-	log.Warn().Msg("this node is now leader; not implemented")
+	// Create IDs
+	var prevStateID string = ""
+	var currStateID string = ""
+
+	log.Warn().Msg("this node is now leader")
+
 	// Propagate election result at spanning tree
-	c.leaderUID = h.uid
 	log.Info().Msgf("Sending election result spanning tree (child nodes: %s)", c.childUIDs)
 	c.propagateChilds(h, com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("leader;%d", h.uid)))
 
-	// Select up to S random philosophs (max number of neigh)
+	// Select up to S random philosophs (max number of neigh) to initiate the voting process
+	if c.sVote > len(h.neighs.Nodes) {
+		c.sVote = len(h.neighs.Nodes)
+	}
 
-	// Double counting
-	log.Info().Msg("Start state request")
-	c.echo["test1234"] = 0
-	c.accState["test1234"] = &consensusState{false, 0, 0}
-	m := com.Msg(h.uid, "CONSENSUS", "stateRequest;test1234")
-	_ = c.propagateChilds(h, m)
+	m := com.Msg(h.uid, "CONSENSUS", "voteBegin")
+	for _, connect := range randNeighsUnique(h.neighs.Nodes, c.sVote) {
+		log.Info().Msgf("Send voteBegin to %s", connect)
 
+		if err := com.Send(connect, m); err != nil {
+			log.Err(err).Msg("Failed to send voteBegin message")
+		} else {
+			c.state.Sent()
+		}
+	}
+
+	// Perform Double Counting until the two reported, consecutive states match
+	for {
+		// some sleep between calls
+		time.Sleep(1 * time.Second)
+
+		// Check state; updated by receiving node process
+		_, okPrev := c.accStateDone[prevStateID]
+		_, okCurr := c.accStateDone[currStateID]
+		statePrev := c.accState[prevStateID]
+		stateCurr := c.accState[currStateID]
+
+		if currStateID != "" && !okCurr {
+			// Wait for state to be reported
+			log.Info().Msgf("Waiting for state to come in; id %s", currStateID)
+			continue
+		} else {
+			// First iteration or the state received
+
+			// Compare current and last state in case they both exist
+			if okPrev && okCurr && statePrev.msgInCounter == statePrev.msgOutCounter && stateCurr.msgInCounter == stateCurr.msgOutCounter {
+				log.Info().Msg("State Converged")
+				break
+			} else {
+				// rotate
+				prevStateID = currStateID
+				currStateID = uuid.NewString()[0:8]
+				log.Info().Msgf("double counting mismatch; starting state collection with id %s", currStateID)
+
+				c.echo[currStateID] = 0
+				c.accState[currStateID] = &consensusState{active: false, msgInCounter: 0, msgOutCounter: 0}
+				m := com.Msg(h.uid, "CONSENSUS", "stateRequest;"+currStateID)
+				_ = c.propagateChilds(h, m)
+			}
+		}
+	}
+
+	// Collect results
+	log.Warn().Msg("Loop exit")
 	return nil
 }
 
@@ -122,14 +250,17 @@ func (c *consensus) checkSendEcho(h *handler) error {
 	// - No childs and received echo from all neighs -> send echo trigger leader
 	if (len(c.childUIDs) == c.receivedEcho) || (len(c.childUIDs) == 0 && c.receivedExplore == len(h.neighs.Nodes)) {
 		if c.m == int(h.uid) { // Check if this node was the initiator
-			return c.leader(h)
+			c.leaderUID = h.uid
+			log.Debug().Msg("Starting leader goroutine")
+			go c.leader(h)
+			return nil
 		} else { // This node is not the leader, send echo alongside the spanning tree
 			log.Info().Msgf("Send echo for %d to %d", c.m, c.srcUID)
 			msg := com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("echo;%d", c.m))
 			return com.Send(h.neighs.Nodes[c.srcUID], msg)
 		}
 	} else {
-		log.Warn().Msgf("Echo condition not met rec_exp=%d rec_echo=%d rec_prt=%d neigh=%d childUIDs=%d", c.receivedExplore, c.receivedEcho, c.receivedParentMsg, len(h.neighs.Nodes), len(c.childUIDs))
+		log.Info().Msgf("Echo condition not met rec_exp=%d rec_echo=%d rec_prt=%d neigh=%d childUIDs=%d", c.receivedExplore, c.receivedEcho, c.receivedParentMsg, len(h.neighs.Nodes), len(c.childUIDs))
 	}
 
 	return nil
@@ -166,6 +297,86 @@ func (c *consensus) propagateChilds(h *handler, msg *com.Message) int {
 	return total
 }
 
+func (c *consensus) sendProposals(h *handler) {
+
+	if c.pNeighs > len(h.neighs.Nodes) {
+		log.Info().Msgf("Correcting pNeighs (%d) to %d due to neighbour limitations", c.pNeighs, len(h.neighs.Nodes))
+		c.pNeighs = len(h.neighs.Nodes)
+	}
+
+	m := com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("proposal;%d", c.tK))
+
+	// Send requests
+	for _, connect := range randNeighsUnique(h.neighs.Nodes, c.pNeighs) {
+		// Sleep random time to avoid connection timeouts
+		// time.Sleep(time.Duration(rand.Intn(200)) * time.Millisecond)
+		if err := com.Send(connect, m); err != nil {
+			log.Err(err).Msgf("Sent proposal to %s", connect)
+		} else {
+			c.state.Sent()
+		}
+	}
+}
+
+func (c *consensus) handle_voteBegin(h *handler, msg *com.Message) error {
+	log.Info().Msg("Start voting")
+	c.state.Received()
+
+	// Send requests to random neighs
+	c.sendProposals(h)
+
+	return nil
+}
+
+func (c *consensus) handle_proposal(h *handler, msg *com.Message) error {
+	c.state.Received()
+
+	if c.aCurrent >= c.aMax {
+		log.Info().Msg("this node is not accepting further proposals")
+		return nil
+	}
+	c.aCurrent = c.aCurrent + 1
+
+	proposedTime, err := nthInt(*msg.Payload, 1)
+	if err != nil {
+		return err
+	}
+
+	// Proposal incoming; calculate mid time and send response
+	newT := int(math.Ceil((float64(proposedTime) + float64(c.tK)) / 2))
+	log.Info().Msgf("New t_k = %d; (old = %d)", newT, c.tK)
+	c.tK = newT
+
+	// Send response
+	log.Info().Msgf("Sending proposalResponse to uid %d", *msg.SourceUID)
+	m := com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("proposalResponse;%d", c.tK))
+	if err := com.Send(h.neighs.Nodes[*msg.SourceUID], m); err != nil {
+		log.Err(err).Msg("Failed to send proposalResponse message")
+	} else {
+		c.state.Sent()
+	}
+
+	// Start voting with random neighbours
+	c.sendProposals(h)
+
+	return nil
+}
+
+// handle_proposalResponse stores the agreed value
+func (c *consensus) handle_proposalResponse(h *handler, msg *com.Message) error {
+	c.state.Received()
+
+	agreedTime, err := nthInt(*msg.Payload, 1)
+	if err != nil {
+		return err
+	}
+
+	log.Info().Msgf("Accepted agreed t_k = %d; (old = %d)", agreedTime, c.tK)
+	c.tK = agreedTime
+
+	return nil
+}
+
 func (c *consensus) stateReturn(h *handler, sUID string) {
 	// Retrieve current state
 	stateReceivedCount, ok := c.echo[sUID]
@@ -180,13 +391,12 @@ func (c *consensus) stateReturn(h *handler, sUID string) {
 	// Forward echo
 	if stateReceivedCount == len(c.childUIDs) {
 		// Add this node state to accState
-		accState.active = accState.active || c.state.active
-		accState.msgInCounter = accState.msgInCounter + c.state.msgInCounter
-		accState.msgOutCounter = accState.msgOutCounter + c.state.msgOutCounter
+		accState.Add(c.state)
 
 		// Construct message & send it
 		if c.leaderUID == h.uid {
-			log.Warn().Msgf("Received state; not implemented (%s, %t, %d, %d)", sUID, accState.active, accState.msgInCounter, accState.msgOutCounter)
+			log.Info().Msgf("Final state; (%s, %t, %d, %d)", sUID, accState.active, accState.msgInCounter, accState.msgOutCounter)
+			c.accStateDone[sUID] = true
 		} else {
 			sMsg := com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("stateResponse;%s;%t;%d;%d", sUID, accState.active, accState.msgInCounter, accState.msgOutCounter))
 			log.Info().Msgf("Propagate (accumulated) state to %d", c.srcUID)

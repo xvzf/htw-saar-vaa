@@ -67,6 +67,7 @@ func (c *listenConfig) handleConn(ctx context.Context, conn net.Conn) {
 	default:
 		// We're still live, propagatae message
 		log.Debug().Msg("Sending message to channel")
+		log.Debug().Msgf("buffered messages in channel: %d", len(c.handleChan)+1)
 		c.handleChan <- msg
 	}
 }
@@ -102,7 +103,6 @@ func (c *listenConfig) Run(ctx context.Context) error {
 		}
 
 		// Dispatch connection to connection handler
-		// go c.handleConn(ctx, conn)
 		c.handleConn(ctx, conn)
 	}
 }

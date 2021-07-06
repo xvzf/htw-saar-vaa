@@ -38,6 +38,11 @@ func main() {
 	uid := flag.Uint("uid", 1, "Node UID")
 	metric := flag.String("metric", ":9111", "metric endpoint")
 
+	consensusM := flag.Int("consensus-m", 5, "number of discrete timestamps")
+	consensusAmax := flag.Int("consensus-amax", 3, "max number of voting rounds")
+	consensusP := flag.Int("consensus-p", 2, "How many random neighbours to choose")
+	consensusS := flag.Int("consensus-s", 3, "How many nodes are asked to initiate the voting process")
+
 	flag.Parse()
 
 	// Start metric server
@@ -85,15 +90,15 @@ func main() {
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	defer cancelCtx()
 
-	recvChan := make(chan *com.Message, 1)
+	recvChan := make(chan *com.Message, 1) // buffer but make sure we're still FIFO
 	d := com.NewDispatcher(listen, recvChan)
 	n := node.New(*uid, cancelCtx, neighs)
 
 	// Register node extensions
 	n.Register(node.NewControlExtension())
 	n.Register(node.NewDiscoveryExtension())
-	n.Register(node.NewRumorExtension())     // Rumor experiment
-	n.Register(node.NewConsensusExtension()) // Consensus experiment
+	n.Register(node.NewRumorExtension())                                                          // Rumor experiment
+	n.Register(node.NewConsensusExtension(*consensusS, *consensusM, *consensusP, *consensusAmax)) // Consensus experiment
 
 	// Start message dispatcher (aka receiver)
 	wg.Add(1)

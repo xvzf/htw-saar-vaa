@@ -83,7 +83,7 @@ Supported payload operations:
 | Operation                                                 | Action                                                                                 |
 |-----------------------------------------------------------|----------------------------------------------------------------------------------------|
 | `stateRequest;uid`                                        | Part of double counting with echo-based algorithm (see Experiments for further detail) |
-| `stateResponse;uid;<t\|f>;<count_msg_in>;<count_msg_out>`  | Part of double counting with echo-based algorithm (see Experiments for further detail) |
+| `stateResponse;uid;<t\|f>;<count_msg_in>;<count_msg_out>` | Part of double counting with echo-based algorithm (see Experiments for further detail) |
 
 > Collection/Voting
 
@@ -91,6 +91,9 @@ Supported payload operations:
 |-----------------------------------------------|------------------------------------------------------------------------------------------|
 | `collectRequest`                              | Part of result collection with echo-based algorithm (see Experiments for further detail) |
 | `collect;<t\|f>;timestamp`                    | Part of result collection with echo-based algorithm (see Experiments for further detail) |
+| `proposal;timestamp`                      | Propose time to another node                                                             |
+| `proposalResponse;timestamp`               | Align on the in-between time between two processes                                       |
+| `voteBegin`                             | Initiate vote request                                                                    |
 
 
 ## Experiments
