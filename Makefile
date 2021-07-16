@@ -1,8 +1,8 @@
-NUM_NODES ?= "10"
-NUM_EDGES ?= "16"
+NUM_NODES ?= "7"
+NUM_EDGES ?= "10"
 
-RUMOR ?= "SomeRumor12345678"
-RUMOR_C ?= "3"
+RUMOR ?= "SomeRumor145678"
+RUMOR_C ?= "2"
 
 DOCKER_IMAGE = "quay.io/xvzf/vaa:latest"
 

@@ -44,6 +44,30 @@ func (s *consensusState) Add(s2 *consensusState) {
 	s.msgOutCounter = s.msgOutCounter + s2.msgOutCounter
 }
 
+type resultState struct {
+	sync.Mutex
+	agreement bool
+	timestamp int
+}
+
+func (r *resultState) Add(agreement bool, timestamp int) {
+	r.Lock()
+	defer r.Unlock()
+
+	r.agreement = agreement && r.agreement
+
+	if r.timestamp != -1 && timestamp != -1 && timestamp != r.timestamp {
+		r.agreement = false
+	} else if r.timestamp == -1 {
+		r.timestamp = timestamp
+	}
+
+	if !r.agreement {
+		r.timestamp = -1
+	}
+
+}
+
 type consensus struct {
 	// Vars used for leader election
 	m          int
@@ -72,6 +96,10 @@ type consensus struct {
 	state        *consensusState            // This node state
 	accState     map[string]*consensusState // Accumulated state for state requests
 	accStateDone map[string]bool            // Accumulated state for state requests
+
+	// Result return
+	accResult     map[string]*resultState
+	accResultDone map[string]bool
 }
 
 func NewConsensusExtension(s, m, p, aMax int) (Extension, string) {
@@ -107,8 +135,10 @@ func NewConsensusExtension(s, m, p, aMax int) (Extension, string) {
 			msgOutCounter: 0,
 		},
 
-		accState:     make(map[string]*consensusState),
-		accStateDone: make(map[string]bool),
+		accState:      make(map[string]*consensusState),
+		accStateDone:  make(map[string]bool),
+		accResult:     make(map[string]*resultState),
+		accResultDone: make(map[string]bool),
 	}, "CONSENSUS"
 }
 
@@ -136,6 +166,11 @@ func (c *consensus) Handle(h *handler, msg *com.Message) error {
 		return c.handle_proposalResponse(h, msg)
 	case strings.HasPrefix(payload, "proposal"): // Check if payload is allowed
 		return c.handle_proposal(h, msg)
+	// collect requests
+	case strings.HasPrefix(payload, "collectRequest"): // Check if payload is allowed
+		return c.handle_collectRequest(h, msg)
+	case strings.HasPrefix(payload, "collect"): // Check if payload is allowed
+		return c.handle_collect(h, msg)
 	}
 
 	return fmt.Errorf("payload `%s` not supported", *msg.Payload)
@@ -234,7 +269,28 @@ func (c *consensus) leader(h *handler) error {
 	}
 
 	// Collect results
-	log.Warn().Msg("Loop exit")
+	collectID := uuid.NewString()[0:8]
+	mCollect := com.Msg(h.uid, "CONSENSUS", "collectRequest;"+collectID)
+	c.echo[collectID] = 0
+	c.accResult[collectID] = &resultState{agreement: true, timestamp: -1}
+	_ = c.propagateChilds(h, mCollect)
+	for {
+		time.Sleep(1 * time.Second)
+		_, ok := c.accResultDone[collectID]
+		if ok {
+			if res, ok := c.accResult[collectID]; ok {
+				log.Info().Msgf("Agreement: %t, (timestamp: %d)", res.agreement, res.timestamp)
+			} else {
+				err := fmt.Errorf("result not available, internal error %s", collectID)
+				log.Err(err).Msg("invalid state")
+				return err
+			}
+			// We're done here, get out
+			break
+		}
+		log.Info().Msg("Consensus leader waiting for collect result")
+	}
+	log.Warn().Msg("Consensus Leader exited")
 	return nil
 }
 
@@ -373,6 +429,105 @@ func (c *consensus) handle_proposalResponse(h *handler, msg *com.Message) error 
 
 	log.Info().Msgf("Accepted agreed t_k = %d; (old = %d)", agreedTime, c.tK)
 	c.tK = agreedTime
+
+	return nil
+}
+
+func (c *consensus) resultReturn(h *handler, rUID string) {
+	// Retrieve current state
+	resultReceivedCount, ok := c.echo[rUID]
+	if !ok {
+		log.Error().Msgf("resultRequest %s does not exist", rUID)
+	}
+	resultState, ok := c.accResult[rUID]
+	if !ok || resultState == nil {
+		log.Error().Msgf("resultRequest %s does not exist or accResult not initialized", rUID)
+	}
+
+	// Forward echo
+	if resultReceivedCount == len(c.childUIDs) {
+		// Add this node state to accState
+
+		c.accResult[rUID].Add(true, c.tK)
+
+		// Construct message & send it
+		if c.leaderUID == h.uid {
+			log.Info().Msgf("Received final result for %s; (agreement: %t, timestamp: %d)", rUID, resultState.agreement, resultState.timestamp)
+			c.accResultDone[rUID] = true
+		} else {
+			sMsg := com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("collect;%s;%t;%d", rUID, resultState.agreement, resultState.timestamp))
+			log.Info().Msgf("Propagate (accumulated) result to %d", c.srcUID)
+			com.Send(h.neighs.Nodes[c.srcUID], sMsg)
+		}
+
+		/*
+			// Cleanup the maps (prevent leakage)
+			delete(c.echo, sUID)
+			delete(c.accState, sUID)
+		*/
+	}
+
+}
+
+// Handle_state is used for identifying via the double counting method, if all nodes proceeded
+func (c *consensus) handle_collectRequest(h *handler, msg *com.Message) error {
+	// This message requires a leader (-> initialised spanning tree) to be present
+	if c.leaderUID == 0 {
+		return errors.New("no leader in network")
+	}
+	rUID, err := nthString(*msg.Payload, 1)
+	if err != nil {
+		return err
+	}
+
+	// Init response counter (if not existing yet); then propagate to childs
+	if _, ok := c.echo[rUID]; ok {
+		return fmt.Errorf("state request with uid %s already exists", rUID)
+	}
+	// Initialize echo-based state collection
+	c.echo[rUID] = 0
+	c.accResult[rUID] = &resultState{
+		agreement: true,
+		timestamp: c.tK,
+	}
+
+	_ = c.propagateChilds(h, msg)
+
+	c.resultReturn(h, rUID)
+	return nil
+}
+
+// Handle_state is used for identifying via the double counting method, if all nodes proceeded
+func (c *consensus) handle_collect(h *handler, msg *com.Message) error {
+	// This message requires a leader (-> initialised spanning tree) to be present
+	if c.leaderUID == 0 {
+		return errors.New("no leader in network")
+	}
+	rUID, err := nthString(*msg.Payload, 1)
+	if err != nil {
+		return err
+	}
+	isActive, err := nthBool(*msg.Payload, 2)
+	if err != nil {
+		return err
+	}
+	timestamp, err := nthInt(*msg.Payload, 3)
+	if err != nil {
+		return err
+	}
+	eCount, ok := c.echo[rUID]
+	if !ok {
+		return fmt.Errorf("collect request with uid %s does not exists", rUID)
+	}
+	accResult, ok := c.accResult[rUID]
+	if !ok || accResult == nil {
+		return fmt.Errorf("collect request with uid %s does not exists or accState not initialized", rUID)
+	}
+
+	c.echo[rUID] = eCount + 1
+	accResult.Add(isActive, timestamp)
+
+	c.resultReturn(h, rUID)
 
 	return nil
 }

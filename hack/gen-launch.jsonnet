@@ -25,7 +25,7 @@
     // Tmux pane for each node
     |||
       tmux new-window -t $SESSION:%(uid)s -n 'node-%(uid)d'
-      tmux send-keys -t 'node-%(uid)d' 'go run ./cmd/node/main.go --uid=%(uid)d --config="./config.txt" --graph="./graph.txt" --metric=":%(metricPort)d"' C-m
+      tmux send-keys -t 'node-%(uid)d' 'go run ./cmd/node/main.go --uid=%(uid)d --config="./config.txt" --graph="./graph.txt" --metric=":%(metricPort)d" --consensus-m=4 --consensus-amax=20 --consensus-p=3 --consensus-s=4' C-m
     ||| % {uid: u, metricPort: 5000 + u},
     for u in std.range(1, nodeCount)
   ]) + |||

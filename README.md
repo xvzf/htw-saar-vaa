@@ -4,6 +4,7 @@
 
 TODO:
 - [ ] Rumor experiment; 20 iterations with different n, m, c
+- [ ] Consensus experiment; 10 iterations with different with different params
 
 ## Starting up multiple nodes
 
@@ -89,11 +90,11 @@ Supported payload operations:
 
 | Operation                                     | Action                                                                                   |
 |-----------------------------------------------|------------------------------------------------------------------------------------------|
-| `collectRequest`                              | Part of result collection with echo-based algorithm (see Experiments for further detail) |
-| `collect;<t\|f>;timestamp`                    | Part of result collection with echo-based algorithm (see Experiments for further detail) |
-| `proposal;timestamp`                      | Propose time to another node                                                             |
-| `proposalResponse;timestamp`               | Align on the in-between time between two processes                                       |
-| `voteBegin`                             | Initiate vote request                                                                    |
+| `collectRequest;uid`                          | Part of result collection with echo-based algorithm (see Experiments for further detail) |
+| `collect;uid;<t\|f>;timestamp`                | Part of result collection with echo-based algorithm (see Experiments for further detail) |
+| `proposal;timestamp`                          | Propose time to another node                                                             |
+| `proposalResponse;timestamp`                  | Align on the in-between time between two processes                                       |
+| `voteBegin`                                   | Initiate vote request                                                                    |
 
 
 ## Experiments
@@ -152,3 +153,7 @@ Receiving nodes propagate the request to its childs and wait for a response of t
 Incoming/Outgoing message counters are summed up.
 The passive/active state is represented in the first part of the `state` response and is *ORed* for all childs and the receiving node before propagating.
 This allows to make sure all network nodes are in a passive state; e.g. `node_1_active('false') && node_2_active('false') && node_3_active('true') = true`.
+
+> Collecting results
+
+Results are - as all control messages after the leader election, transfered across the spanning tree. a `collectRequest` is propagated along the child nodes and nodes send an accumulated `collect` response once all children have reported theirs.
