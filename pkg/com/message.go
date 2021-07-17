@@ -34,7 +34,7 @@ func (m *Message) isValid() error {
 	return nil
 }
 
-func strPointer(s string) *string {
+func StrPointer(s string) *string {
 	return &s
 }
 
@@ -51,8 +51,8 @@ func Msg(uid uint, msgType, msgPayload string) *Message {
 	return &Message{
 		Timestamp: timePointer(time.Now().UTC()),
 		SourceUID: uintPointer(uid),
-		Type:      strPointer(msgType),
-		Payload:   strPointer(msgPayload),
+		Type:      StrPointer(msgType),
+		Payload:   StrPointer(msgPayload),
 	}
 }
 

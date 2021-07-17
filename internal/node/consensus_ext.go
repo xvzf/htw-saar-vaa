@@ -259,8 +259,7 @@ func (c *consensus) leaderLoop(ctx context.Context, h *handler) error {
 				currStateID = uuid.NewString()[0:8]
 				log.Info().Msgf("double counting mismatch; starting state collection with id %s", currStateID)
 
-				// c.echo[currStateID] = 0 FIXME
-				c.echo[currStateID] = -1
+				c.echo[currStateID] = 0
 				c.accState[currStateID] = &consensusState{active: false, msgInCounter: 0, msgOutCounter: 0}
 				m := com.Msg(h.uid, "CONSENSUS", "stateRequest;"+currStateID)
 				_ = c.leader.PropagateChilds(h, m)

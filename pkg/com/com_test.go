@@ -15,11 +15,11 @@ import (
 func TestCommunication_valid(t *testing.T) {
 	net_addr := "127.0.0.1:33333"
 	test_msg := &Message{
-		UUID:      strPointer(uuid.NewString()),
+		UUID:      StrPointer(uuid.NewString()),
 		Timestamp: timePointer(time.Now().UTC()),
 		SourceUID: uintPointer(2),
-		Type:      strPointer("CONTROL"),
-		Payload:   strPointer("some payload 1234"),
+		Type:      StrPointer("CONTROL"),
+		Payload:   StrPointer("some payload 1234"),
 	}
 	recv_chan := make(chan *Message)
 	fmt.Print(recv_chan)

@@ -47,6 +47,8 @@ func NewLeader(msgType string, wantLeader bool) *Leader {
 }
 
 func (l *Leader) TryHandleLeaderMessage(h *handler, msg *com.Message) (bool, error) {
+	l.Lock()
+	defer l.Unlock()
 	switch payload := *msg.Payload; {
 	case strings.HasPrefix(payload, "explore"): // Check if payload is allowed
 		return true, l.handle_explore(h, msg)
@@ -76,29 +78,6 @@ func (l *Leader) propagate(h *handler, msg *com.Message) int {
 	for nuid, connect := range h.neighs.Nodes {
 		if nuid == *msg.SourceUID {
 			continue // skip sending to receiver
-		}
-		err := com.Send(connect, com.MsgPropagate(h.uid, msg))
-		if err != nil {
-			log.Err(err).Msg("Failed to proagate")
-		}
-		total += 1
-	}
-
-	return total
-}
-
-// DistributeSpanningTree propagates messages along the spanning tree, more efficient compared to simple flooding
-func (l *Leader) DistributeSpanningTree(h *handler, msg *com.Message) int {
-	spanningTreeNeighs := append(l.childUIDs, l.srcUID)
-	total := 0
-	for _, nuid := range spanningTreeNeighs {
-		if nuid == *msg.SourceUID {
-			continue // skip sending to receiver
-		}
-		connect, ok := h.neighs.Nodes[nuid]
-		if !ok {
-			log.Error().Msgf("failed to find connect string for node with UID %d", nuid)
-			continue
 		}
 		err := com.Send(connect, com.MsgPropagate(h.uid, msg))
 		if err != nil {

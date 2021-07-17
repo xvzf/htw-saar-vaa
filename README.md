@@ -77,7 +77,6 @@ Supported payload operations:
 | `child;<node-id>;<0\|1>`                      | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
 | `echo;<node-id>`                              | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
 | `leader;<node-id>`                            | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
-| `leader;<node-id>`                            | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
 
 > Double Counting (Termination)
 
@@ -96,6 +95,39 @@ Supported payload operations:
 | `proposalResponse;timestamp`                  | Align on the in-between time between two processes                                       |
 | `voteBegin`                                   | Initiate vote request                                                                    |
 
+## Banking Messages
+> Experimenting with mutual exclusion (unknown network structures), consistent snapshot
+
+All discovery messages are of message type `BANKING` and carry the operation as payload.
+
+Supported payload operations:
+
+> Leader election (same as in Distributed Consensus)
+
+| Operation                                     | Action                                                                                 |
+|-----------------------------------------------|----------------------------------------------------------------------------------------|
+| `coordinator`                                 | Triggers leader-election                                                               |
+| `explore;<node-id>`                           | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
+| `child;<node-id>;<0\|1>`                      | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
+| `echo;<node-id>`                              | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
+| `leader;<node-id>`                            | Part of leader-election with echo-based algorithm (see Experiments for further detail) |
+
+> Lamport Mutual Exclusion
+
+| Operation                                                | Action                                                                                 |
+|----------------------------------------------------------|----------------------------------------------------------------------------------------|
+| `lockRequest;<timestamp>;<node-id>;<req-timestamp>`      | Part of the mutual exclusing lock based on the lamportMutex                            |
+| `lockAck;<timestamp>;<node-id>;<req-timestamp>`          | Part of the mutual exclusing lock based on the lamportMutex                            |
+| `lockRelease;<timestamp>;<node-id>;<req-timestamp>`      | Part of the mutual exclusing lock based on the lamportMutex                            |
+
+> Transactions, those operations are distributed via flooding
+
+| Operation                                                            | Action                                                                                   |
+|----------------------------------------------------------------------|------------------------------------------------------------------------------------------|
+| `transactStart;<timestamp>;<uid>;<node-id-pj>;<balance>;<p>`         | Start transaction, transmit balance & p so `P_j` can perform its check; `<target-id>`    |
+| `transactAck;<timestamp>;<uid>`                                      | `P_j` acknowledges it performed the action                                               |
+| `transactGetBalance;<timestamp>;<uid>;<node-id-pj>;`                 | Get the balance of the target-node                                                       |
+| `transactBalance;<timestamp>;<uid>;<balance>`                        | Balance of `P_j`; as with other messages, this is mutual exclusive -> ID is not required |
 
 ## Experiments
 
@@ -162,3 +194,29 @@ This allows to make sure all network nodes are in a passive state; e.g. `node_1_
 > Collecting results
 
 Results are - as all control messages after the leader election, transfered across the spanning tree. a `collectRequest` is propagated along the child nodes and nodes send an accumulated `collect` response once all children have reported theirs.
+
+
+### Distributed Mutual Exclusion And Consistent Snapshot
+> **NOTE** for this experiment to work, there is a dependency on a successful leader election as it also constructs the spanning tree which is later on used to distribute control messages efficient across the network
+
+#### Leader Election
+
+The leader election uses the same implementation as the *Distributed Consensus* leader election.
+
+### Transactions
+> :warning: This experiment is by design not using efficient communication and uses flooding
+
+Each node (`P_i`) has a local balance `B_i` (initialised on startup with a random positive value between 0 and 100k) and tries to do a transaction with `P_j`. In order to do so, the following steps are followed:
+- select random target node `P_j` (*note: this can be any node in the network, not just one of the neighbours*)
+- select random percentage value (`p`)
+- send own balance value `B_i` to `P_j` along with the percentage `p`
+- ask `P_j` what its balance is
+
+on `P_i`, when receiving the message do the following:
+- `B_j >= B_i` **increase own balance with `p` percent of `B_j`
+- `B_j < B_i` **increase own balance with `p` percent of `B_i`
+
+on `P_j`, when receiving the message do the following:
+- `B_i >= B_j` **increase own balance with `p` percent of `B_i`
+- `B_i < B_j` **increase own balance with `p` percent of `B_j`
+- Send acknowledgement

@@ -22,8 +22,6 @@ import (
 func init() {
 	// Setup logging
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
-	// debug := flag.Bool("debug", true, "enable debug mode")
-	// zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 
 }
@@ -32,6 +30,8 @@ func main() {
 	var wg sync.WaitGroup
 	var neighs *neigh.Neighs
 	var err error
+
+	debug := flag.Bool("debug", false, "enable debug mode")
 
 	config := flag.String("config", "./config", "path to config file")
 	graph := flag.String("graph", "", "path to graph")
@@ -44,6 +44,11 @@ func main() {
 	consensusS := flag.Int("consensus-s", 3, "How many nodes are asked to initiate the voting process")
 
 	flag.Parse()
+
+	// Debug logs
+	if *debug {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	}
 
 	// Start metric server
 	log.Info().Msgf("Starting metric endpoint at %s/metrics", *metric)
@@ -97,7 +102,8 @@ func main() {
 	// Register node extensions
 	n.Register(node.NewControlExtension())
 	n.Register(node.NewDiscoveryExtension())
-	n.Register(node.NewRumorExtension())                                                          // Rumor experiment
+	n.Register(node.NewRumorExtension()) // Rumor experiment
+	n.Register(node.NewDistributedBankingExtension())
 	n.Register(node.NewConsensusExtension(*consensusS, *consensusM, *consensusP, *consensusAmax)) // Consensus experiment
 
 	// Start message dispatcher (aka receiver)

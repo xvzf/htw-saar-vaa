@@ -20,6 +20,11 @@ consensus: consensus-leader-elect
 consensus-leader-elect:
 	go run ./cmd/client/main.go --config="./config.txt" --type="CONSENSUS" --payload="coordinator"
 
+banking: banking-leader-elect
+
+banking-leader-elect:
+	go run ./cmd/client/main.go --config="./config.txt" --type="BANKING" --payload="coordinator"
+
 shutdown:
 	go run ./cmd/client/main.go --config="./config.txt" --type="CONTROL" --payload="SHUTDOWN"
 
