@@ -214,9 +214,9 @@ func (b *banking) transactionLoop(ctx context.Context, h *handler) error {
 		reqBalance := com.Msg(h.uid, "BANKING", fmt.Sprintf("transactGetBalance;<placeholder>;%s;%d", uuid.NewString()[:8], randN))
 
 		log.Info().Msgf("Starting transaction with node %d; own balance: %d; random p: %d", randN, b.balance, b.randP)
-		// Send messages (!! order matters here, turning it around would make a bit more sense)
-		b.floodWithLamportClock(h, reqStart)
+		// FIXME; swapped order of those messages on purpose - those are in the opposite order for the scenario described in the exercise sheet
 		b.floodWithLamportClock(h, reqBalance)
+		b.floodWithLamportClock(h, reqStart)
 
 		// Wait for the conditions to be OK
 		for {
@@ -385,7 +385,7 @@ func (b *banking) handle_lockAck(h *handler, msg *com.Message) error {
 		if reqLC > lockLC {
 			b.lockAckCounter = b.lockAckCounter + 1
 		}
-		if n := len(h.neighs.AllNodes); b.lockAckCounter == n {
+		if n := len(h.neighs.AllNodes) - 1; b.lockAckCounter == n {
 			b.lockRequestActive = true
 			log.Info().Msg("Lamport Mutex lock active on this node")
 		} else {
