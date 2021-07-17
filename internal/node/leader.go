@@ -87,8 +87,31 @@ func (l *Leader) propagate(h *handler, msg *com.Message) int {
 	return total
 }
 
-// propagateChilds propagates the leader election results across the child
-func (l *Leader) propagateChilds(h *handler, msg *com.Message) int {
+// DistributeSpanningTree propagates messages along the spanning tree, more efficient compared to simple flooding
+func (l *Leader) DistributeSpanningTree(h *handler, msg *com.Message) int {
+	spanningTreeNeighs := append(l.childUIDs, l.srcUID)
+	total := 0
+	for _, nuid := range spanningTreeNeighs {
+		if nuid == *msg.SourceUID {
+			continue // skip sending to receiver
+		}
+		connect, ok := h.neighs.Nodes[nuid]
+		if !ok {
+			log.Error().Msgf("failed to find connect string for node with UID %d", nuid)
+			continue
+		}
+		err := com.Send(connect, com.MsgPropagate(h.uid, msg))
+		if err != nil {
+			log.Err(err).Msg("Failed to proagate")
+		}
+		total += 1
+	}
+
+	return total
+}
+
+// PropagateChilds propagates the leader election results across the child
+func (l *Leader) PropagateChilds(h *handler, msg *com.Message) int {
 	total := 0
 	for _, cuid := range l.childUIDs {
 		err := com.Send(h.neighs.Nodes[cuid], com.MsgPropagate(h.uid, msg))
@@ -116,7 +139,7 @@ func (l *Leader) checkSendEcho(h *handler) error {
 			l.leaderUID = h.uid
 			// Send election results
 			log.Info().Msgf("Sending election result spanning tree (child nodes: %s)", l.childUIDs)
-			l.propagateChilds(h, com.Msg(h.uid, l.messageType, fmt.Sprintf("leader;%d", h.uid)))
+			l.PropagateChilds(h, com.Msg(h.uid, l.messageType, fmt.Sprintf("leader;%d", h.uid)))
 			// This node is now the leader! :)
 			log.Info().Msgf("This node is now leader (%s)", l.messageType)
 			l.isLeader = true
@@ -171,7 +194,7 @@ func (l *Leader) handle_leader(h *handler, msg *com.Message) error {
 	l.leaderUID = uint(luid)
 
 	log.Info().Msgf("Propagating leader message to %s", l.childUIDs)
-	l.propagateChilds(h, msg)
+	l.PropagateChilds(h, msg)
 	return nil
 }
 

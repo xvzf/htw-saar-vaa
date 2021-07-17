@@ -139,6 +139,8 @@ Once a node received the message, it drops `echo` and `explore` messages from no
 
 The now constructed, distributed spanning tree can later be used for additional communication of control messages.
 
+> The resulting spanning tree allows efficient *flooding* of messages across the spanning tree.
+
 
 ##### Concensus
 

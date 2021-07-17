@@ -8,6 +8,7 @@ import (
 // Similar to Config but only contains a subset required for this node
 type Neighs struct {
 	Nodes      map[uint]string // Neighbor connect addresses
+	AllNodes   map[uint]string // All nodes
 	Registered map[uint]bool   // Keeps track if a neigh registered itself or not
 }
 
@@ -57,6 +58,7 @@ func NeighsFromConfigAndGraph(uid uint, config, graph string) (*Neighs, error) {
 		return nil, err
 	}
 
+	n.AllNodes = c.Nodes
 	// Extract neighbours for the node UID based on the graph
 	for a, v := range nm.Neighs {
 		for _, b := range v {
