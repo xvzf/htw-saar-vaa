@@ -263,7 +263,7 @@ func (c *consensus) leaderLoop(ctx context.Context, h *handler) error {
 				c.echo[currStateID] = -1
 				c.accState[currStateID] = &consensusState{active: false, msgInCounter: 0, msgOutCounter: 0}
 				m := com.Msg(h.uid, "CONSENSUS", "stateRequest;"+currStateID)
-				_ = c.leader.propagateChilds(h, m)
+				_ = c.leader.PropagateChilds(h, m)
 			}
 		}
 	}
@@ -273,7 +273,7 @@ func (c *consensus) leaderLoop(ctx context.Context, h *handler) error {
 	mCollect := com.Msg(h.uid, "CONSENSUS", "collectRequest;"+collectID)
 	c.echo[collectID] = 0
 	c.accResult[collectID] = &resultState{agreement: true, timestamp: -1}
-	_ = c.leader.propagateChilds(h, mCollect)
+	_ = c.leader.PropagateChilds(h, mCollect)
 	for {
 
 		// Some sleeps between the interval
@@ -440,7 +440,7 @@ func (c *consensus) handle_collectRequest(h *handler, msg *com.Message) error {
 		timestamp: c.tK,
 	}
 
-	_ = c.leader.propagateChilds(h, msg)
+	_ = c.leader.PropagateChilds(h, msg)
 
 	c.resultReturn(h, rUID)
 	return nil
@@ -540,7 +540,7 @@ func (c *consensus) handle_stateRequest(h *handler, msg *com.Message) error {
 	}
 
 	// Propagate to all childs
-	_ = c.leader.propagateChilds(h, msg)
+	_ = c.leader.PropagateChilds(h, msg)
 
 	// Check if we should return state early (-> when leaf node)
 	c.stateReturn(h, sUID)
