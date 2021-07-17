@@ -43,6 +43,14 @@ func (h *handler) Run(ctx context.Context, c chan *com.Message) error {
 	// Receive until context exits
 	log.Info().Uint("uid", h.uid).Msg("Starting node")
 	log.Info().Uint("uid", h.uid).Msgf("Registered neighbors: %s", h.neighs.Nodes)
+	log.Info().Uint("uid", h.uid).Msgf("Triggering Preflights")
+	for msgType, ext := range h.ext {
+		if err := ext.Preflight(ctx, h); err != nil {
+			log.Err(err).Msgf("Failed initialising extension with message type %s", msgType)
+			h.exit()
+			return err
+		}
+	}
 	for {
 		select {
 		case msg := <-c:

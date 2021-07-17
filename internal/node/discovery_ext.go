@@ -1,6 +1,8 @@
 package node
 
 import (
+	"context"
+
 	"github.com/rs/zerolog/log"
 	"github.com/xvzf/vaa/pkg/com"
 )
@@ -9,6 +11,10 @@ type discovery struct{}
 
 func NewDiscoveryExtension() (Extension, string) {
 	return &discovery{}, "DISCOVERY"
+}
+func (d *discovery) Preflight(ctx context.Context, h *handler) error {
+	// not required
+	return nil
 }
 
 func (d *discovery) Handle(h *handler, msg *com.Message) error {

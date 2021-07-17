@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"strings"
@@ -44,6 +45,11 @@ func (r *rumor) trusted(rumor string) {
 	r.Lock()
 	defer r.Unlock()
 	r.trustedRumors[rumor] = true
+}
+
+func (r *rumor) Preflight(ctx context.Context, h *handler) error {
+	// not required
+	return nil
 }
 
 // handleRumor handles incoming rumor events

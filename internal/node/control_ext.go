@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -14,6 +15,11 @@ type control struct {
 
 func NewControlExtension() (Extension, string) {
 	return &control{started: false}, "CONTROL"
+}
+
+func (c *control) Preflight(ctx context.Context, h *handler) error {
+	// not required
+	return nil
 }
 
 func (c *control) Handle(h *handler, msg *com.Message) error {
