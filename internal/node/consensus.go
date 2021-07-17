@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -69,18 +70,7 @@ func (r *resultState) Add(agreement bool, timestamp int) {
 }
 
 type consensus struct {
-	// Vars used for leader election
-	m          int
-	wantLeader bool // Random init at startup time
-	leaderUID  uint // Will be > 0 when a leader has been selected; in this case all election messages are ignored
-
-	// Those vars are linked to an active election and are resetted whenever m changes
-	childUIDs         []uint // Childs of this node (spanning tree)
-	receivedParentMsg int    // Used to track how many neighbours responded the explore
-	receivedExplore   int    // Used to track how many explore messages have been received
-	sentExplore       int    // Used to track how many explore messages have been sent
-	receivedEcho      int    // Used to track how many echos have been received for
-	srcUID            uint   // Parent of this node (if it has one, if it is leader -> its own UID)
+	leader *Leader
 
 	// Echo communication for state/collect requests.
 	echo map[string]int // map[<req_uid>]<counter_recv_messages>
@@ -107,16 +97,7 @@ func NewConsensusExtension(s, m, p, aMax int) (Extension, string) {
 	wantLeader := rand.Intn(2) == 1 // 50% chance of being true
 	log.Info().Msgf("Wants to be leader: %t", wantLeader)
 	return &consensus{
-		// Consensus related
-		m:                 0,
-		childUIDs:         make([]uint, 0),
-		receivedParentMsg: 0,
-		receivedExplore:   0,
-		sentExplore:       0,
-		receivedEcho:      0,
-		leaderUID:         0,
-		srcUID:            0,
-		wantLeader:        wantLeader,
+		leader: NewLeader("CONSENSUS", wantLeader),
 
 		// Echo communication
 		echo: map[string]int{},
@@ -142,18 +123,18 @@ func NewConsensusExtension(s, m, p, aMax int) (Extension, string) {
 	}, "CONSENSUS"
 }
 
+func (c *consensus) Preflight(ctx context.Context, h *handler) error {
+	go c.leaderLoop(ctx, h)
+	return nil
+}
+
 func (c *consensus) Handle(h *handler, msg *com.Message) error {
+	// Try to handle leader elect message
+	if ok, err := c.leader.TryHandleLeaderMessage(h, msg); ok {
+		return err
+	}
+	// If not handled, continue with the consensus messages
 	switch payload := *msg.Payload; {
-	case strings.HasPrefix(payload, "explore"): // Check if payload is allowed
-		return c.handle_explore(h, msg)
-	case strings.HasPrefix(payload, "child"): // Check if payload is allowed
-		return c.handle_child(h, msg)
-	case strings.HasPrefix(payload, "echo"): // Check if payload is allowed
-		return c.handle_echo(h, msg)
-	case strings.HasPrefix(payload, "coordinator"): // Check if payload is allowed
-		return c.handle_coordinator(h, msg)
-	case strings.HasPrefix(payload, "leader"): // Check if payload is allowed
-		return c.handle_leader(h, msg)
 	// State Request needs to be checked before the response
 	case strings.HasPrefix(payload, "stateRequest"): // Check if payload is allowed
 		return c.handle_stateRequest(h, msg)
@@ -205,16 +186,28 @@ func randNeighsUnique(in map[uint]string, p int) []string {
 }
 
 // leader is the control method
-func (c *consensus) leader(h *handler) error {
+func (c *consensus) leaderLoop(ctx context.Context, h *handler) error {
 	// Create IDs
 	var prevStateID string = ""
 	var currStateID string = ""
 
-	log.Warn().Msg("this node is now leader")
+	// Block until this node is leader
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info().Msg("Stopping leader (consensus)")
+			return nil
+		case <-time.After(50 * time.Millisecond):
+		}
+		if c.leader.IsLeader() {
+			break
+		} else if c.leader.ElectionComplete() {
+			log.Warn().Msg("This node lost the election (consensus)")
+			return nil
+		}
+	}
 
-	// Propagate election result at spanning tree
-	log.Info().Msgf("Sending election result spanning tree (child nodes: %s)", c.childUIDs)
-	c.propagateChilds(h, com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("leader;%d", h.uid)))
+	log.Warn().Msg("this node is now leader (consensus)")
 
 	// Select up to S random philosophs (max number of neigh) to initiate the voting process
 	if c.sVote > len(h.neighs.Nodes) {
@@ -234,8 +227,14 @@ func (c *consensus) leader(h *handler) error {
 
 	// Perform Double Counting until the two reported, consecutive states match
 	for {
-		// some sleep between calls
-		time.Sleep(1 * time.Second)
+
+		// Some sleeps between the interval
+		select {
+		case <-ctx.Done():
+			log.Info().Msg("Stopping leader")
+			return nil
+		case <-time.After(1 * time.Second):
+		}
 
 		// Check state; updated by receiving node process
 		_, okPrev := c.accStateDone[prevStateID]
@@ -263,7 +262,7 @@ func (c *consensus) leader(h *handler) error {
 				c.echo[currStateID] = 0
 				c.accState[currStateID] = &consensusState{active: false, msgInCounter: 0, msgOutCounter: 0}
 				m := com.Msg(h.uid, "CONSENSUS", "stateRequest;"+currStateID)
-				_ = c.propagateChilds(h, m)
+				_ = c.leader.propagateChilds(h, m)
 			}
 		}
 	}
@@ -273,9 +272,17 @@ func (c *consensus) leader(h *handler) error {
 	mCollect := com.Msg(h.uid, "CONSENSUS", "collectRequest;"+collectID)
 	c.echo[collectID] = 0
 	c.accResult[collectID] = &resultState{agreement: true, timestamp: -1}
-	_ = c.propagateChilds(h, mCollect)
+	_ = c.leader.propagateChilds(h, mCollect)
 	for {
-		time.Sleep(1 * time.Second)
+
+		// Some sleeps between the interval
+		select {
+		case <-ctx.Done():
+			log.Info().Msg("Stopping leader")
+			return nil
+		case <-time.After(1 * time.Second):
+		}
+
 		_, ok := c.accResultDone[collectID]
 		if ok {
 			if res, ok := c.accResult[collectID]; ok {
@@ -292,65 +299,6 @@ func (c *consensus) leader(h *handler) error {
 	}
 	log.Warn().Msg("Consensus Leader exited")
 	return nil
-}
-
-// Checks if we should send an echo (either edge node or all echos from childs received)
-func (c *consensus) checkSendEcho(h *handler) error {
-	allParents := c.sentExplore == c.receivedParentMsg
-	if !allParents {
-		log.Info().Msgf("Not yet received all child messages %d/%d", c.receivedParentMsg, c.sentExplore)
-		return nil
-	}
-
-	// - Received echos from all childs -> send echo or trigger leader
-	// - No childs and received echo from all neighs -> send echo trigger leader
-	if (len(c.childUIDs) == c.receivedEcho) || (len(c.childUIDs) == 0 && c.receivedExplore == len(h.neighs.Nodes)) {
-		if c.m == int(h.uid) { // Check if this node was the initiator
-			c.leaderUID = h.uid
-			log.Debug().Msg("Starting leader goroutine")
-			go c.leader(h)
-			return nil
-		} else { // This node is not the leader, send echo alongside the spanning tree
-			log.Info().Msgf("Send echo for %d to %d", c.m, c.srcUID)
-			msg := com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("echo;%d", c.m))
-			return com.Send(h.neighs.Nodes[c.srcUID], msg)
-		}
-	} else {
-		log.Info().Msgf("Echo condition not met rec_exp=%d rec_echo=%d rec_prt=%d neigh=%d childUIDs=%d", c.receivedExplore, c.receivedEcho, c.receivedParentMsg, len(h.neighs.Nodes), len(c.childUIDs))
-	}
-
-	return nil
-}
-
-// Propagates to all but sender
-func (c *consensus) propagate(h *handler, msg *com.Message) int {
-	total := 0
-	for nuid, connect := range h.neighs.Nodes {
-		if nuid == *msg.SourceUID {
-			continue // skip sending to receiver
-		}
-		err := com.Send(connect, com.MsgPropagate(h.uid, msg))
-		if err != nil {
-			log.Err(err).Msg("Failed to proagate")
-		}
-		total += 1
-	}
-
-	return total
-}
-
-// Propagates to all childs (-> along the spanning tree)
-func (c *consensus) propagateChilds(h *handler, msg *com.Message) int {
-	total := 0
-	for _, cuid := range c.childUIDs {
-		err := com.Send(h.neighs.Nodes[cuid], com.MsgPropagate(h.uid, msg))
-		if err != nil {
-			log.Err(err).Msg("Failed to proagate")
-		}
-		total += 1
-	}
-
-	return total
 }
 
 func (c *consensus) sendProposals(h *handler) {
@@ -445,19 +393,19 @@ func (c *consensus) resultReturn(h *handler, rUID string) {
 	}
 
 	// Forward echo
-	if resultReceivedCount == len(c.childUIDs) {
+	if resultReceivedCount == len(c.leader.childUIDs) {
 		// Add this node state to accState
 
 		c.accResult[rUID].Add(true, c.tK)
 
 		// Construct message & send it
-		if c.leaderUID == h.uid {
+		if c.leader.IsLeader() {
 			log.Info().Msgf("Received final result for %s; (agreement: %t, timestamp: %d)", rUID, resultState.agreement, resultState.timestamp)
 			c.accResultDone[rUID] = true
 		} else {
 			sMsg := com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("collect;%s;%t;%d", rUID, resultState.agreement, resultState.timestamp))
-			log.Info().Msgf("Propagate (accumulated) result to %d", c.srcUID)
-			com.Send(h.neighs.Nodes[c.srcUID], sMsg)
+			log.Info().Msgf("Propagate (accumulated) result to %d", c.leader.srcUID)
+			com.Send(h.neighs.Nodes[c.leader.srcUID], sMsg)
 		}
 
 		/*
@@ -472,7 +420,7 @@ func (c *consensus) resultReturn(h *handler, rUID string) {
 // Handle_state is used for identifying via the double counting method, if all nodes proceeded
 func (c *consensus) handle_collectRequest(h *handler, msg *com.Message) error {
 	// This message requires a leader (-> initialised spanning tree) to be present
-	if c.leaderUID == 0 {
+	if !c.leader.ElectionComplete() {
 		return errors.New("no leader in network")
 	}
 	rUID, err := nthString(*msg.Payload, 1)
@@ -491,7 +439,7 @@ func (c *consensus) handle_collectRequest(h *handler, msg *com.Message) error {
 		timestamp: c.tK,
 	}
 
-	_ = c.propagateChilds(h, msg)
+	_ = c.leader.propagateChilds(h, msg)
 
 	c.resultReturn(h, rUID)
 	return nil
@@ -500,7 +448,7 @@ func (c *consensus) handle_collectRequest(h *handler, msg *com.Message) error {
 // Handle_state is used for identifying via the double counting method, if all nodes proceeded
 func (c *consensus) handle_collect(h *handler, msg *com.Message) error {
 	// This message requires a leader (-> initialised spanning tree) to be present
-	if c.leaderUID == 0 {
+	if !c.leader.ElectionComplete() {
 		return errors.New("no leader in network")
 	}
 	rUID, err := nthString(*msg.Payload, 1)
@@ -544,18 +492,18 @@ func (c *consensus) stateReturn(h *handler, sUID string) {
 	}
 
 	// Forward echo
-	if stateReceivedCount == len(c.childUIDs) {
+	if stateReceivedCount == len(c.leader.childUIDs) {
 		// Add this node state to accState
 		accState.Add(c.state)
 
 		// Construct message & send it
-		if c.leaderUID == h.uid {
+		if c.leader.IsLeader() {
 			log.Info().Msgf("Final state; (%s, %t, %d, %d)", sUID, accState.active, accState.msgInCounter, accState.msgOutCounter)
 			c.accStateDone[sUID] = true
 		} else {
 			sMsg := com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("stateResponse;%s;%t;%d;%d", sUID, accState.active, accState.msgInCounter, accState.msgOutCounter))
-			log.Info().Msgf("Propagate (accumulated) state to %d", c.srcUID)
-			com.Send(h.neighs.Nodes[c.srcUID], sMsg)
+			log.Info().Msgf("Propagate (accumulated) state to %d", c.leader.srcUID)
+			com.Send(h.neighs.Nodes[c.leader.srcUID], sMsg)
 		}
 
 		/*
@@ -570,7 +518,7 @@ func (c *consensus) stateReturn(h *handler, sUID string) {
 // Handle_state is used for identifying via the double counting method, if all nodes proceeded
 func (c *consensus) handle_stateRequest(h *handler, msg *com.Message) error {
 	// This message requires a leader (-> initialised spanning tree) to be present
-	if c.leaderUID == 0 {
+	if !c.leader.ElectionComplete() {
 		return errors.New("no leader in network")
 	}
 	sUID, err := nthString(*msg.Payload, 1)
@@ -591,7 +539,7 @@ func (c *consensus) handle_stateRequest(h *handler, msg *com.Message) error {
 	}
 
 	// Propagate to all childs
-	_ = c.propagateChilds(h, msg)
+	_ = c.leader.propagateChilds(h, msg)
 
 	// Check if we should return state early (-> when leaf node)
 	c.stateReturn(h, sUID)
@@ -601,7 +549,7 @@ func (c *consensus) handle_stateRequest(h *handler, msg *com.Message) error {
 // Handle_state is used for identifying via the double counting method, if all nodes proceeded
 func (c *consensus) handle_stateResponse(h *handler, msg *com.Message) error {
 	// This message requires a leader (-> initialised spanning tree) to be present
-	if c.leaderUID == 0 {
+	if !c.leader.ElectionComplete() {
 		return errors.New("no leader in network")
 	}
 	sUID, err := nthString(*msg.Payload, 1)
@@ -637,149 +585,6 @@ func (c *consensus) handle_stateResponse(h *handler, msg *com.Message) error {
 
 	// check if we should return state
 	c.stateReturn(h, sUID)
-
-	return nil
-}
-
-// Handle_coordinator starts the leader-election for the future vote coordinator
-func (c *consensus) handle_coordinator(h *handler, msg *com.Message) error {
-	if !c.wantLeader {
-		log.Info().Uint("uid", h.uid).Msg("Not starting coordinator election")
-		return nil
-	}
-	log.Info().Uint("uid", h.uid).Msg("Start coordinator election")
-	// Set m to own
-	c.m = int(h.uid)
-	c.childUIDs = []uint{}
-	c.receivedEcho = 0
-	c.receivedExplore = 0
-	c.srcUID = h.uid // own UID
-	c.sentExplore = 0
-	// Send explore to all neighbouirs
-	for _, connect := range h.neighs.Nodes {
-		err := com.Send(connect, com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("explore;%d", h.uid)))
-		if err != nil {
-			log.Err(err).Msg("Failed to send explore")
-		}
-		c.sentExplore += 1
-	}
-	return nil
-}
-
-// Handle_leader sets the leader status of the network
-func (c *consensus) handle_leader(h *handler, msg *com.Message) error {
-	luid, err := nthInt(*msg.Payload, 1)
-	if err != nil {
-		return err
-	}
-
-	log.Info().Uint("uid", h.uid).Msgf("Setting leaderUID to %d", luid)
-
-	// Set m to own
-	c.leaderUID = uint(luid)
-
-	log.Info().Msgf("Propagating leader message to %s", c.childUIDs)
-	c.propagateChilds(h, msg)
-	return nil
-}
-
-// Handle_explore handles incoming explore messages
-func (c *consensus) handle_explore(h *handler, msg *com.Message) error {
-	if c.leaderUID != 0 {
-		log.Warn().Str("req_id", *msg.UUID).Msgf("%d is already the leader, ignoring", c.leaderUID)
-		return nil
-	}
-
-	euid, err := nthInt(*msg.Payload, 1)
-	if err != nil {
-		return err
-	}
-
-	if euid > c.m { // Larger m received
-		log.Info().Msgf("Explore %d > current %d, evicting", euid, c.m)
-		// Initalize internal datastructure
-		c.m = euid
-		c.receivedParentMsg = 0
-		c.receivedExplore = 1
-		c.sentExplore = 0
-		c.childUIDs = []uint{}
-		c.srcUID = *msg.SourceUID
-
-		// Send child message to parent
-		com.Send(h.neighs.Nodes[c.srcUID], com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("child;%d;1", c.m)))
-
-		// Propagate to neighs
-		c.sentExplore = c.propagate(h, msg)
-
-	} else if euid == c.m { // Already known; not child
-		com.Send(h.neighs.Nodes[*msg.SourceUID], com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("child;%d;0", c.m)))
-		c.receivedExplore += 1
-	} else { // Lower m received; evicted
-		log.Info().Msgf("Evicted EXPLORE %d in favour of %d", euid, c.m)
-		return nil
-	}
-
-	// Check if edge node; trigger echo
-	return c.checkSendEcho(h)
-}
-
-// Handle_explore handles incoming child messages
-func (c *consensus) handle_child(h *handler, msg *com.Message) error {
-	if c.leaderUID != 0 {
-		log.Warn().Str("req_id", *msg.UUID).Msgf("%d is already the leader, ignoring", c.leaderUID)
-		return nil
-	}
-	euid, err := nthInt(*msg.Payload, 1)
-	if err != nil {
-		return err
-	}
-
-	child, err := nthInt(*msg.Payload, 2)
-	if err != nil {
-		return err
-	}
-
-	if euid > c.m {
-		log.Error().Msg("Invalid state, received child for UID > current m -> not send by this node")
-		return errors.New("invalid state")
-	} else if euid == c.m {
-		c.receivedParentMsg += 1
-		// Add child to child list (-> distributed spanning tree)
-		if child == 1 {
-			c.childUIDs = append(c.childUIDs, *msg.SourceUID)
-		}
-		log.Info().Msgf("Increase isParent received to %d, total child count: %d", c.receivedParentMsg, len(c.childUIDs))
-		// Check if edge node; trigger echo
-		c.checkSendEcho(h)
-	} else {
-		log.Info().Msgf("Ignore child for %d, voting for", euid, c.m)
-	}
-
-	return nil
-}
-
-// Handle_explore handles incoming echo messages
-func (c *consensus) handle_echo(h *handler, msg *com.Message) error {
-	if c.leaderUID != 0 {
-		log.Warn().Str("req_id", *msg.UUID).Msgf("%d is already the leader, ignoring", c.leaderUID)
-		return nil
-	}
-	euid, err := nthInt(*msg.Payload, 1)
-	if err != nil {
-		return err
-	}
-
-	if euid > c.m {
-		log.Error().Msgf("Invalid state: %d > current %d, not triggered by this node", euid, c.m)
-		return errors.New("invalid state")
-	} else if euid == c.m {
-		// Increase received echo counter; check if we should propagate
-		c.receivedEcho += 1
-		// log.Warn().Msg("We should not be here, child messages should always come in before echo; processing nevertheless")
-		c.checkSendEcho(h) // FIXME should not happen
-	} else {
-		log.Info().Msgf("Evicted ECHO %d in favour of %d", euid, c.m)
-	}
 
 	return nil
 }

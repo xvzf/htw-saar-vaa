@@ -46,20 +46,28 @@ func NewLeader(msgType string, wantLeader bool) *Leader {
 	}
 }
 
-func (l *Leader) Handle(h *handler, msg *com.Message) error {
+func (l *Leader) TryHandleLeaderMessage(h *handler, msg *com.Message) (bool, error) {
 	switch payload := *msg.Payload; {
 	case strings.HasPrefix(payload, "explore"): // Check if payload is allowed
-		return l.handle_explore(h, msg)
+		return true, l.handle_explore(h, msg)
 	case strings.HasPrefix(payload, "child"): // Check if payload is allowed
-		return l.handle_child(h, msg)
+		return true, l.handle_child(h, msg)
 	case strings.HasPrefix(payload, "echo"): // Check if payload is allowed
-		return l.handle_echo(h, msg)
+		return true, l.handle_echo(h, msg)
 	case strings.HasPrefix(payload, "coordinator"): // Check if payload is allowed
-		return l.handle_coordinator(h, msg)
+		return true, l.handle_coordinator(h, msg)
 	case strings.HasPrefix(payload, "leader"): // Check if payload is allowed
-		return l.handle_leader(h, msg)
+		return true, l.handle_leader(h, msg)
 	}
-	return nil
+	return false, nil
+}
+
+func (l *Leader) ElectionComplete() bool {
+	return l.leaderUID != 0
+}
+
+func (l *Leader) IsLeader() bool {
+	return l.isLeader
 }
 
 // Propagates to all but sender
@@ -108,14 +116,14 @@ func (l *Leader) checkSendEcho(h *handler) error {
 			l.leaderUID = h.uid
 			// Send election results
 			log.Info().Msgf("Sending election result spanning tree (child nodes: %s)", l.childUIDs)
-			l.propagateChilds(h, com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("leader;%d", h.uid)))
+			l.propagateChilds(h, com.Msg(h.uid, l.messageType, fmt.Sprintf("leader;%d", h.uid)))
 			// This node is now the leader! :)
-			log.Info().Msg("This node is now leader")
+			log.Info().Msgf("This node is now leader (%s)", l.messageType)
 			l.isLeader = true
 			return nil
 		} else { // This node is not the leader, send echo alongside the spanning tree
 			log.Info().Msgf("Send echo for %d to %d", l.m, l.srcUID)
-			msg := com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("echo;%d", l.m))
+			msg := com.Msg(h.uid, l.messageType, fmt.Sprintf("echo;%d", l.m))
 			return com.Send(h.neighs.Nodes[l.srcUID], msg)
 		}
 	} else {
@@ -141,7 +149,7 @@ func (l *Leader) handle_coordinator(h *handler, msg *com.Message) error {
 	l.sentExplore = 0
 	// Send explore to all neighbouirs
 	for _, connect := range h.neighs.Nodes {
-		err := com.Send(connect, com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("explore;%d", h.uid)))
+		err := com.Send(connect, com.Msg(h.uid, l.messageType, fmt.Sprintf("explore;%d", h.uid)))
 		if err != nil {
 			log.Err(err).Msg("Failed to send explore")
 		}
@@ -190,13 +198,13 @@ func (l *Leader) handle_explore(h *handler, msg *com.Message) error {
 		l.srcUID = *msg.SourceUID
 
 		// Send child message to parent
-		com.Send(h.neighs.Nodes[l.srcUID], com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("child;%d;1", l.m)))
+		com.Send(h.neighs.Nodes[l.srcUID], com.Msg(h.uid, l.messageType, fmt.Sprintf("child;%d;1", l.m)))
 
 		// Propagate to neighs
 		l.sentExplore = l.propagate(h, msg)
 
 	} else if euid == l.m { // Already known; not child
-		com.Send(h.neighs.Nodes[*msg.SourceUID], com.Msg(h.uid, "CONSENSUS", fmt.Sprintf("child;%d;0", l.m)))
+		com.Send(h.neighs.Nodes[*msg.SourceUID], com.Msg(h.uid, l.messageType, fmt.Sprintf("child;%d;0", l.m)))
 		l.receivedExplore += 1
 	} else { // Lower m received; evicted
 		log.Info().Msgf("Evicted EXPLORE %d in favour of %d", euid, l.m)

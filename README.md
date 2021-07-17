@@ -115,6 +115,8 @@ The initial rumor is started via the control message, e.g. `DISTRIBUTE RUMOR 2;r
 ##### Election
 > The election algorithm used here is a derivate of the wave algorithm. The implementation is done in `internal/node/consensus.go`
 
+> The election process has been encapsulated into its own module/extension and will be re-used in different scenarios
+
 A random number of nodes starts a distributed election based on an echo algorithm. The winner will start the distributed concensus.
 The largest `node-id` should win.
 
@@ -136,6 +138,7 @@ Afterwards the leader propagates the result (`leader <node-id>`) to all nodes wi
 Once a node received the message, it drops `echo` and `explore` messages from now on and forwards the `leader;<node-id>` to its own childs (nodes with their uid in `child_uids`).
 
 The now constructed, distributed spanning tree can later be used for additional communication of control messages.
+
 
 ##### Concensus
 
