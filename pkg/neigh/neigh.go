@@ -59,7 +59,6 @@ func NeighsFromConfigAndGraph(uid uint, config, graph string) (*Neighs, error) {
 	}
 
 	n.AllNodes = c.Nodes
-	delete(n.AllNodes, uid)
 	// Extract neighbours for the node UID based on the graph
 	for a, v := range nm.Neighs {
 		for _, b := range v {
