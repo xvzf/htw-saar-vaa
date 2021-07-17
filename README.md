@@ -129,6 +129,13 @@ Supported payload operations:
 | `transactGetBalance;<timestamp>;<uid>;<node-id-pj>;`                 | Get the balance of the target-node                                                       |
 | `transactBalance;<timestamp>;<uid>;<balance>`                        | Balance of `P_j`; as with other messages, this is mutual exclusive -> ID is not required |
 
+> Consistent snapshot (Chandy Lamport)
+
+| Operation                                                            | Action                                                                                   |
+|----------------------------------------------------------------------|------------------------------------------------------------------------------------------|
+| `marker;<uid>`                                                       | Starts the snapshot collection following the Chandy Lamport algorithm                    |
+| `state;<uid>;<base64compressedjsonstate>`                            | Feedbacks the state after closing the snapshot to the coordinator                        |
+
 ## Experiments
 
 ### Rumor distribution
@@ -203,12 +210,26 @@ Results are - as all control messages after the leader election, transfered acro
 
 The leader election uses the same implementation as the *Distributed Consensus* leader election.
 
-### Transactions
+#### Mutual Lock
+
+The Lamport algorithm is used to provide a distributed lock on the graph. Since nodes (`n`) are not interconnected with each other but in a spanning tree, the message complexity increases to (worst case):
+- `(n_forwards-1) * (n_request-1)`
+- `(n_forwards-1) * (n_ack-1)`
+- `(n_forwards-1) * (n_release-1)`
+Resulting in a total message count of `3*(n-1)^2`. The complexity in distributed networks is therefore in the complexity class `O(n^2)` rather than `O(n)` when all nodes can reach each other.
+
+A node can request a critical section execution by sending a request with its current lamport clock timestamp to all nodes in the network (propagate across the spanning tree)
+Each node keeps a priority key of `(lamport_clock_timestamp, node_id)` and allows always the node with the lowest `lamport_clock_timestamp` to enter the critical section.
+This node only enters the critical section when it received an acknowledgement from all other nodes in the network.
+After exiting the critical section, it distributes a release message across the spanning tree, allowing the next critical section.
+
+#### Transactions
 > :warning: This experiment is by design not using efficient communication and uses flooding
 
 Each node (`P_i`) has a local balance `B_i` (initialised on startup with a random positive value between 0 and 100k) and tries to do a transaction with `P_j`. In order to do so, the following steps are followed:
 - select random target node `P_j` (*note: this can be any node in the network, not just one of the neighbours*)
 - select random percentage value (`p`)
+- acquire lock (*Mutual Lock* provides further details)
 - send own balance value `B_i` to `P_j` along with the percentage `p`
 - ask `P_j` what its balance is
 
@@ -220,3 +241,17 @@ on `P_j`, when receiving the message do the following:
 - `B_i >= B_j` **increase own balance with `p` percent of `B_i`
 - `B_i < B_j` **increase own balance with `p` percent of `B_j`
 - Send acknowledgement
+
+
+#### Consistent Snapshot
+
+The consistent snapshot is implemented using the Chandy Lamport algorithm.
+When a node initates the snapshot collection (for this purpose a collector is elected, as noted in the chapter introduction, the resulting spanning tree is used for control message communication).
+
+On initiation, the node stores its own state `S_i`; afterwards it sends a marker message to all neighbours.
+At the same time, the node starts recording all incoming messages from each neighbour `C_ji`
+
+When receiving a marker, the node checks if the marker already existed. If not, it persists its state and starts monitoring all incoming channels. The receiving edge buffer is marked as empty and no more messages are recorded here (-> mark as complete).
+Afterwards the marker is sent to all outgoing edges.
+When the marker is already known, the receiving edge buffer is marked as consistend and no more messages will be recorded on it.
+After all receiving markers are closed, the state is send to the coordinator following the spanning tree

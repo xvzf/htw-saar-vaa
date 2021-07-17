@@ -1,9 +1,14 @@
 package node
 
 import (
+	"bytes"
+	"compress/flate"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"math/rand"
 	"strings"
 	"time"
@@ -12,6 +17,49 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/xvzf/vaa/pkg/com"
 )
+
+// snapshot of the node
+type snapshot struct {
+	UID         uint                    `json:"uid"`
+	MsgIn       map[uint][]*com.Message `json:"msg_in"`
+	Balance     int                     `json:"balance"`
+	msgInActive map[uint]bool
+}
+
+func NewSnapshot(h *handler, balance int) *snapshot {
+	s := &snapshot{h.uid, map[uint][]*com.Message{}, balance, map[uint]bool{}}
+
+	for uid, _ := range h.neighs.Nodes {
+		s.msgInActive[uid] = true
+		s.MsgIn[uid] = []*com.Message{}
+	}
+
+	return s
+}
+
+// Compress marshals the snapshot as JSON and then runs base64 for the transport
+func (s *snapshot) Compress() string {
+	b, _ := json.Marshal(s)
+	buf := new(bytes.Buffer)
+	w, _ := flate.NewWriter(buf, -1)
+	w.Write(b)
+	w.Close()
+
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+// Load compressed snapshot form
+func LoadSnapshot(b64 string) *snapshot {
+	b, _ := base64.StdEncoding.DecodeString(b64)
+	buf := new(bytes.Buffer)
+	r := flate.NewReader(buf)
+	buf.Write(b)
+	b, _ = ioutil.ReadAll(r)
+
+	var s *snapshot = &snapshot{}
+	json.Unmarshal(b, s)
+	return s
+}
 
 // Distributed Banking
 type banking struct {
@@ -35,6 +83,10 @@ type banking struct {
 	randP                   int
 	transactAckReceived     bool
 	transactBalanceReceived bool
+
+	// Consistent snapshots
+	snapshots         map[string]*snapshot
+	receivedSnapshots map[string][]*snapshot
 }
 
 func NewDistributedBankingExtension() (Extension, string) {
@@ -60,6 +112,10 @@ func NewDistributedBankingExtension() (Extension, string) {
 		// Transaction balance
 		balance: rand.Intn(100000), // random value between 0 and 100k
 		randP:   0,                 // updated on every request
+
+		// Snapshot
+		snapshots:         map[string]*snapshot{},
+		receivedSnapshots: map[string][]*snapshot{},
 	}, "BANKING"
 }
 
@@ -115,11 +171,29 @@ func (b *banking) Handle(h *handler, msg *com.Message) error {
 		return err
 	}
 
+	// FIXME Handle snapshot messages
+	switch payload := *msg.Payload; {
+	// distributed mutex
+	case strings.HasPrefix(payload, "marker"): // Check if payload is allowed
+		return b.handle_marker(h, msg)
+	case strings.HasPrefix(payload, "state"): // Check if payload is allowed
+		return b.handle_state(h, msg)
+	}
+
 	// Update Lamport Clock
 	if msgLC, err := nthInt(*msg.Payload, 1); err != nil {
 		return err
 	} else {
 		b.lc.ReceiveEventTS(msgLC)
+	}
+
+	// Store in snapshot
+	for _, snapshot := range b.snapshots {
+		if active, ok := snapshot.msgInActive[*msg.SourceUID]; active && ok {
+			snapshot.MsgIn[*msg.SourceUID] = append(snapshot.MsgIn[*msg.SourceUID], msg)
+		} else if !ok {
+			log.Error().Msg("Invalid state for snapshot")
+		}
 	}
 
 	// Handle requests
@@ -200,6 +274,8 @@ func (b *banking) transactionLoop(ctx context.Context, h *handler) error {
 		b.transactBalanceReceived = false
 		b.randP = rand.Intn(100)
 
+		time.Sleep(1 * time.Minute)
+
 		// Random neighbour
 		randN := rand.Intn(len(h.neighs.AllNodes)) + 1
 		for {
@@ -267,7 +343,37 @@ func (b *banking) leaderLoop(ctx context.Context, h *handler) error {
 	}
 
 	log.Warn().Msg("starting observer (banking)")
-	return nil
+
+	// oldbalance := -1
+	marker := ""
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info().Msg("Stopping leader (banking)")
+			return nil
+		case <-time.After(1 * time.Second):
+		}
+
+		// Wait for results or start new state request
+		if marker == "" || len(b.receivedSnapshots[marker]) == len(h.neighs.AllNodes) {
+			if marker != "" {
+				// Compute Network balance
+
+			}
+			// Got result; rotate
+			marker = uuid.NewString()[:8]
+			log.Info().Msg("Starting consistent snapshot")
+			b.snapshots[marker] = NewSnapshot(h, b.balance)
+			b.receivedSnapshots[marker] = []*snapshot{}
+			m := com.Msg(h.uid, "BANKING", fmt.Sprintf("marker;%s", marker))
+			for _, connect := range h.neighs.Nodes {
+				if err := com.Send(connect, m); err != nil {
+					log.Err(err).Msg("failed to send marker init")
+				}
+			}
+		}
+
+	}
 }
 
 // DistributeSpanningTree propagates messages along the spanning tree, more efficient compared to simple flooding
@@ -529,6 +635,85 @@ func (b *banking) handle_transactBalance(h *handler, msg *com.Message) error {
 	} else {
 		// Flood until we reach the destination
 		b.floodWithLamportClock(h, msg)
+	}
+
+	return nil
+}
+
+func (b *banking) handle_marker(h *handler, msg *com.Message) error {
+	marker, err := nthString(*msg.Payload, 1)
+	if err != nil {
+		return err
+	}
+
+	if s, ok := b.snapshots[marker]; ok {
+		// Marker exists, mark receiving channel as complete
+		s.msgInActive[*msg.SourceUID] = false
+	} else {
+		// Marker is new, init and send to all outgoing edges
+		b.snapshots[marker] = NewSnapshot(h, b.balance)
+		// Mark receiving edge as new
+		b.snapshots[marker].msgInActive[*msg.SourceUID] = false
+		// Send to all outgoing edges
+		for _, connect := range h.neighs.Nodes {
+			m := com.MsgPropagate(h.uid, msg)
+			if err := com.Send(connect, m); err != nil {
+				log.Err(err).Msg("Failed to send marker")
+			}
+		}
+	}
+
+	// check if all receiving channels are closed
+	complete := true
+	for _, active := range b.snapshots[marker].msgInActive {
+		complete = complete && !active
+	}
+	if complete {
+		if h.uid != b.leader.leaderUID {
+			// Send message to coordinator
+			log.Info().Msg("Snapshot complete, forwarding to coordinator")
+			m := com.Msg(h.uid, "BANKING", fmt.Sprintf("state;%s;%s", marker, b.snapshots[marker].Compress()))
+			return com.Send(h.neighs.Nodes[b.leader.srcUID], m)
+		} else {
+			// Push to array
+			log.Info().Msg("Snapshot complete (coordinator), storing")
+			b.addCompleteSnapshot(marker, b.snapshots[marker])
+
+		}
+	}
+
+	return nil
+}
+
+func (b *banking) addCompleteSnapshot(marker string, s *snapshot) {
+	if _, ok := b.receivedSnapshots[marker]; !ok {
+		b.receivedSnapshots[marker] = []*snapshot{s}
+	} else {
+		b.receivedSnapshots[marker] = append(b.receivedSnapshots[marker], s)
+	}
+}
+
+func (b *banking) handle_state(h *handler, msg *com.Message) error {
+	marker, err := nthString(*msg.Payload, 1)
+	if err != nil {
+		return err
+	}
+	compressedSnapshot, err := nthString(*msg.Payload, 2)
+	if err != nil {
+		return err
+	}
+
+	// Check if the state is for this node
+	if h.uid == b.leader.leaderUID {
+		s := LoadSnapshot(compressedSnapshot)
+		log.Info().Msgf("Received state for marker %s, node %d", marker, s.UID)
+		b.addCompleteSnapshot(marker, s)
+
+	} else {
+		//Forward to parent
+		log.Debug().Msg("Forwarding state")
+		m := com.MsgPropagate(h.uid, msg)
+		return com.Send(h.neighs.Nodes[b.leader.srcUID], m)
 	}
 
 	return nil
