@@ -11,6 +11,7 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -77,7 +78,8 @@ type banking struct {
 	lockAckCounter    int
 
 	// Flooding
-	known map[string]struct{} // keep track of known mesages
+	knownMutex sync.Mutex
+	known      map[string]struct{} // keep track of known mesages
 
 	// Tranaction balance
 	balance                 int
@@ -86,6 +88,7 @@ type banking struct {
 	transactBalanceReceived bool
 
 	// Consistent snapshots
+	snapshotMutex     sync.Mutex
 	snapshots         map[string]*snapshot
 	receivedSnapshots map[string][]*snapshot
 }
@@ -138,12 +141,15 @@ func (b *banking) floodWithLamportClock(h *handler, msg *com.Message) int {
 		return counter
 	}
 
+	b.knownMutex.Lock()
 	if _, ok := b.known[rUID]; ok {
 		log.Debug().Msgf("Already known, %s", *msg.Payload)
+		b.knownMutex.Unlock()
 		return counter
 	} else {
 		b.known[rUID] = struct{}{}
 	}
+	b.knownMutex.Unlock()
 
 	for nuid, connect := range h.neighs.Nodes {
 		if nuid == *msg.SourceUID {
@@ -191,6 +197,7 @@ func (b *banking) Handle(h *handler, msg *com.Message) error {
 	}
 
 	// Store in snapshot
+	b.snapshotMutex.Lock()
 	for _, snapshot := range b.snapshots {
 		if active, ok := snapshot.msgInActive[*msg.SourceUID]; active && ok {
 			snapshot.MsgIn[*msg.SourceUID] = append(snapshot.MsgIn[*msg.SourceUID], msg)
@@ -198,6 +205,7 @@ func (b *banking) Handle(h *handler, msg *com.Message) error {
 			log.Error().Msg("Invalid state for snapshot")
 		}
 	}
+	b.snapshotMutex.Unlock()
 
 	// Handle requests
 	switch payload := *msg.Payload; {
@@ -389,8 +397,10 @@ func (b *banking) leaderLoop(ctx context.Context, h *handler) error {
 			// Got result; next iteration
 			marker = uuid.NewString()[:8]
 			log.Info().Msg("Starting consistent snapshot")
+			b.snapshotMutex.Lock()
 			b.snapshots[marker] = NewSnapshot(h, b.balance, b.randP)
 			b.receivedSnapshots[marker] = []*snapshot{}
+			b.snapshotMutex.Unlock()
 			m := com.Msg(h.uid, "BANKING", fmt.Sprintf("marker;%s", marker))
 			for _, connect := range h.neighs.Nodes {
 				if err := com.Send(connect, m); err != nil {
@@ -550,10 +560,13 @@ func (b *banking) handle_transactStart(h *handler, msg *com.Message) error {
 	}
 
 	// Make sure this is only handled once
+	b.knownMutex.Lock()
 	if _, ok := b.known[rUID]; ok {
 		log.Debug().Msg("Deduplicating transactStart request")
+		b.knownMutex.Unlock()
 		return nil
 	}
+	b.knownMutex.Unlock()
 
 	// Check if this node was asked; if so, return
 	if targetID == int(h.uid) {
@@ -567,7 +580,9 @@ func (b *banking) handle_transactStart(h *handler, msg *com.Message) error {
 		log.Info().Msgf("Updated balance from %d to %d", oldBalance, b.balance)
 
 		resp := com.Msg(h.uid, "BANKING", fmt.Sprintf("transactAck;<placeholder>;%s", uuid.NewString()[:8]))
+		b.knownMutex.Lock()
 		b.known[rUID] = struct{}{}
+		b.knownMutex.Unlock()
 		b.floodWithLamportClock(h, resp)
 	} else {
 		b.floodWithLamportClock(h, msg)
@@ -583,14 +598,19 @@ func (b *banking) handle_transactAck(h *handler, msg *com.Message) error {
 	}
 
 	// Make sure this is only handled once
+	b.knownMutex.Lock()
 	if _, ok := b.known[rUID]; ok {
 		log.Debug().Msg("Deduplicating transact ack response")
+		b.knownMutex.Unlock()
 		return nil
 	}
+	b.knownMutex.Unlock()
 
 	if b.lockRequestActive {
+		b.knownMutex.Lock()
 		b.known[rUID] = struct{}{}
 		b.transactAckReceived = true
+		b.knownMutex.Unlock()
 	} else {
 		b.floodWithLamportClock(h, msg)
 	}
@@ -616,8 +636,10 @@ func (b *banking) handle_transactGetBalance(h *handler, msg *com.Message) error 
 
 	// Check if this node was asked; if so, return
 	if targetID == int(h.uid) {
+		b.knownMutex.Lock()
 		resp := com.Msg(h.uid, "BANKING", fmt.Sprintf("transactBalance;<placeholder>;%s;%d", uuid.NewString()[:8], b.balance))
 		b.known[rUID] = struct{}{}
+		b.knownMutex.Unlock()
 		b.floodWithLamportClock(h, resp)
 	} else {
 		b.floodWithLamportClock(h, msg)
@@ -638,10 +660,13 @@ func (b *banking) handle_transactBalance(h *handler, msg *com.Message) error {
 	}
 
 	// Make sure this is only handled once
+	b.knownMutex.Lock()
 	if _, ok := b.known[rUID]; ok {
 		log.Debug().Msg("Deduplicating balance response")
+		b.knownMutex.Unlock()
 		return nil
 	}
+	b.knownMutex.Unlock()
 
 	// this node is supposed to update our balance!
 	oldBalance := b.balance
@@ -654,8 +679,10 @@ func (b *banking) handle_transactBalance(h *handler, msg *com.Message) error {
 		log.Info().Msgf("Updated balance from %d to %d", oldBalance, b.balance)
 		b.transactBalanceReceived = true // Update so the transactLoop can continue
 
+		b.knownMutex.Lock()
 		// Make sure we ignore future messages here
 		b.known[rUID] = struct{}{}
+		b.knownMutex.Unlock()
 	} else {
 		// Flood until we reach the destination
 		b.floodWithLamportClock(h, msg)
@@ -665,6 +692,8 @@ func (b *banking) handle_transactBalance(h *handler, msg *com.Message) error {
 }
 
 func (b *banking) handle_marker(h *handler, msg *com.Message) error {
+	b.snapshotMutex.Lock()
+	defer b.snapshotMutex.Unlock()
 	marker, err := nthString(*msg.Payload, 1)
 	if err != nil {
 		return err
@@ -719,6 +748,8 @@ func (b *banking) addCompleteSnapshot(marker string, s *snapshot) {
 }
 
 func (b *banking) handle_state(h *handler, msg *com.Message) error {
+	b.snapshotMutex.Lock()
+	defer b.snapshotMutex.Unlock()
 	marker, err := nthString(*msg.Payload, 1)
 	if err != nil {
 		return err
