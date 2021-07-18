@@ -41,5 +41,10 @@ func Send(target string, msg *Message) error {
 		Str("payload", *msg.Payload).
 		Msgf(">>> %s", target)
 
+		/*
+			log.Info().Msg("Artificial sleep")
+			time.Sleep(200 * time.Millisecond)
+		*/
+
 	return nil
 }
