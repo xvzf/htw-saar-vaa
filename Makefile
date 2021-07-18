@@ -1,5 +1,5 @@
 NUM_NODES ?= "7"
-NUM_EDGES ?= "10"
+NUM_EDGES ?= "11"
 
 RUMOR ?= "SomeRumor145678"
 RUMOR_C ?= "2"

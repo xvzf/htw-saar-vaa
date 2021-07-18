@@ -1,12 +1,13 @@
 # Verteilte Algorithment und Anwendungen (vaa)
 > This project is based on a distributed systems course at my university, tailed towards bringing better understandings
-> for communication and state in those.
+> for communication and state in them.
 
 TODO:
 - [ ] Rumor experiment; 20 iterations with different n, m, c
 - [ ] Consensus experiment; 10 iterations with different with different params
 
 ## Starting up multiple nodes
+> Note: Experiments showed everything > ~50 nodes runs into network timeouts
 
 The Jsonnet template `hack/gen-launch.jsonnet` allows generation of arbitrary launch scripts up to 999 nodes (afterwards there will be port collisions).
 The `make gen` command generates a random graph, node configuration and a `launch.sh` which will start each node in a dedicated tmux pane for easy debugging.
@@ -29,6 +30,56 @@ type Message struct {
 }
 ```
 For a message to be valid, all fields need to be set. The `github.com/xvzf/vaa/pkg/com` package contains a dispatcher (aka receiving server dispatching messages to a go channel) and a client for constructing and sending messages. A message UUID is generated whenever the client is used. Sending the same message multiple times, be it to multiple targets or to the same target, the UUID changes with every transferred message. This ensures tracability and uniqueness of messages.
+
+## Implementation
+
+### Node
+> The node process is defined in `cmd/node.go`
+
+The base of the experiments are a very lightweight `Node` implementation allowing the registration of multiple extensions, routing a certain message type, e.g. `CONTROL` to a specified extension. Moreover, extensions support *preflight* initiation hooks for e.g. for starting a watcher process.
+Each node reads the configuration file and the graph and constructs a `Handler` (containing all node *business logic*), containing information about its own identifier and the neighbour nodes.
+It also contains all registered extensions
+
+```go
+type handler struct {
+	uid    uint
+	neighs *neigh.Neighs
+	exit   context.CancelFunc
+	wg     sync.WaitGroup
+	ext    map[string]Extension
+}
+```
+
+The extension interface is very simple and provides a message handler & the preflight hook. Latter one is passed a context as well allowing graceful termination. For registering an extension, the extension alongside the message prefix is passed, e.g. `h.Register(ext, "PREFIX")`.
+```go
+type Extension interface {
+	// Hanlde handles messages of a specific type
+	Handle(h *handler, msg *com.Message) error
+	// Preflight initialised additional goroutines/communication paths
+	Preflight(ctx context.Context, h *handler) error
+}
+```
+
+Each extension just implements the interface and maintains full control for parameters, e.g. in a later experiment, custom variables are passed to the extension before it is added to the node handler.
+
+The communication is encapsulated from the handler logic and is implemented in `pkg/com/dispatcher.go` (server) and `pkg/com/client.go` (client).
+The server handles all incoming connections in a sequential order (:warning: this is required for the FIFO assumptions in some of the algorithms but sometimes leads to timeouts). After the message is valid and decoded, it is sent to a [go channel](https://tour.golang.org/concurrency/2) which the handler listens on.
+This setup prevents deadlocks from a node not responding to messages while it is still processing one while keeping the FIFO order in place.
+
+Both the node handler and the dispatcher are context aware and terminate gracefully - either on a stop signal coming from the operating system or a control message on the network.
+
+### Client
+> Client implemented in `cmd/client.go`
+
+The client for the network is very simple and is only used for launching certain experiments or sending control messages.
+It reads the same configuration as the node and takes the assumption all nodes can be reached. Requests are sent in parallel which allows e.g. multiple nodes to start the leader election at the same time; with just distributing messages across the network there will always be one node reached first and possibly winning the election.
+
+### Graph Generation
+> Graph generation implemented in `cmd/graphgen.go`
+
+The graph generation is rather simple, it uses a [community package](https://pkg.go.dev/github.com/awalterschulze/gographviz@v2.0.3+incompatible) to parse the Graphviz file format and to interact with graphs.
+When a random graph with `n` nodes and `e` edges shall be generated, edges are randomly inserted (unique) until the number of edges matches. Each node is assigned a minimum of `1` edge therefore eliminating the risk of generating unconnected sub-graphs.
+
 
 ## Discovery Messages
 > Discovery messages are used for discovering neighbours/marking them as active
@@ -152,8 +203,7 @@ The initial rumor is started via the control message, e.g. `DISTRIBUTE RUMOR 2;r
 #### Scenario
 
 ##### Election
-> The election algorithm used here is a derivate of the wave algorithm. The implementation is done in `internal/node/consensus.go`
-
+> The election algorithm used here is a derivate of the wave algorithm. The implementation is done in `internal/node/leader.go`
 > The election process has been encapsulated into its own module/extension and will be re-used in different scenarios
 
 A random number of nodes starts a distributed election based on an echo algorithm. The winner will start the distributed concensus.
@@ -180,6 +230,12 @@ The now constructed, distributed spanning tree can later be used for additional 
 
 > The resulting spanning tree allows efficient *flooding* of messages across the spanning tree.
 
+*Notes*:
+- The election algorithm seems very robust in networks with up to 50 nodes
+- Sometimes, network timeouts cause a deadlock, this happens only in larger networks
+- The spanning tree is effective for reducing the number of messages when propagating a message
+- The spanning tree propagation removes the need for having an identifier on each message to keep track of *known* messages; it always terminates and visits each node just once.
+
 
 ##### Concensus
 
@@ -187,6 +243,8 @@ Multiple (`n`) nodes try to align on a common value, without centralised entity.
 On concensus start, every node (`P_k`) selects one value as its favourite.
 During the election, nodes communicate only in pairs based on their communication graph.
 
+> Voting
+After a coordinator initiated the voting process using the `vote` message, each node performs the alignment until the `aMax` condition is met. Afterwards, messages are dropped.
 
 > Termination based on Double Counting Method
 
@@ -242,6 +300,8 @@ on `P_j`, when receiving the message do the following:
 - `B_i < B_j` **increase own balance with `p` percent of `B_j`
 - Send acknowledgement
 
+The messages exchanged for this behaviour are described in the *Banking Messages* section.
+
 
 #### Consistent Snapshot
 
@@ -254,4 +314,25 @@ At the same time, the node starts recording all incoming messages from each neig
 When receiving a marker, the node checks if the marker already existed. If not, it persists its state and starts monitoring all incoming channels. The receiving edge buffer is marked as empty and no more messages are recorded here (-> mark as complete).
 Afterwards the marker is sent to all outgoing edges.
 When the marker is already known, the receiving edge buffer is marked as consistend and no more messages will be recorded on it.
-After all receiving markers are closed, the state is send to the coordinator following the spanning tree
+After all receiving markers are closed, the state is send to the coordinator following the spanning tree.
+
+Each marker is annotated with a unique identifier so multiple or even parralel consecutive queries are possible,
+
+The coordinator checks if there are any messages in the snapshot affecting the balance of each node. If there are none, it simply adds-up the balances to get a global view. A future implementation could re-construct the time-stream of messages and simulate each node in order to also consider in-flight requests.
+
+
+#### Conclusions
+> This section also discusses chances of a deadlock
+
+The implementation in this scenario is rather complex and very hard to debug. Especially when the number of nodes or edges in the network increases, the number of messages increases significantly.
+
+With the assumptions:
+- no message lost
+- no node crashes
+- FIFO of messages
+- Every Lamport Clock timestamp is unique
+a deadlock cannot happen.
+
+However, the initial messages of the transaction experiment are sent from each node after a random interval between 0 and 3000ms. This *could* generate a possible condition where the lamport clock of two independend outgoing messages is the same and therefore the priority queue implemented in this solution, which is only based on the lamport clock timestamp, stops working as the network state of the priority queue contains two different entries for one timestamp thus none of the two nodes will receive an acknowledgement from all nodes.
+A possible workaround would be to take in the `node_id` as a 2nd parameter in the priority queue to not stop the decision making.
+Another option would be to add a timeout to the mutual exclusion lock which after a certain amount of time floods the a release message despite not entering the critical section (thus skipping the critical section execution).

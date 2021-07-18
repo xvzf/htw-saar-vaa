@@ -23,13 +23,14 @@ type snapshot struct {
 	UID         uint                    `json:"uid"`
 	MsgIn       map[uint][]*com.Message `json:"msg_in"`
 	Balance     int                     `json:"balance"`
+	RandP       int                     `json:"rand_p"`
 	msgInActive map[uint]bool
 }
 
-func NewSnapshot(h *handler, balance int) *snapshot {
-	s := &snapshot{h.uid, map[uint][]*com.Message{}, balance, map[uint]bool{}}
+func NewSnapshot(h *handler, balance int, randP int) *snapshot {
+	s := &snapshot{h.uid, map[uint][]*com.Message{}, balance, randP, map[uint]bool{}}
 
-	for uid, _ := range h.neighs.Nodes {
+	for uid := range h.neighs.Nodes {
 		s.msgInActive[uid] = true
 		s.MsgIn[uid] = []*com.Message{}
 	}
@@ -92,7 +93,9 @@ type banking struct {
 func NewDistributedBankingExtension() (Extension, string) {
 	rand.Seed(time.Now().UnixNano())
 	wantLeader := rand.Intn(2) == 1 // 50% chance of being true
+	balance := rand.Intn(100000)
 	log.Info().Msgf("Wants to be leader: %t", wantLeader)
+	log.Info().Msgf("Starting balance: %d", balance)
 	return &banking{
 		// Leader Election / communicate to leader
 		leader: NewLeader("BANKING", wantLeader),
@@ -110,8 +113,8 @@ func NewDistributedBankingExtension() (Extension, string) {
 		known: map[string]struct{}{},
 
 		// Transaction balance
-		balance: rand.Intn(100000), // random value between 0 and 100k
-		randP:   0,                 // updated on every request
+		balance: balance,
+		randP:   0, // updated on every request
 
 		// Snapshot
 		snapshots:         map[string]*snapshot{},
@@ -274,8 +277,6 @@ func (b *banking) transactionLoop(ctx context.Context, h *handler) error {
 		b.transactBalanceReceived = false
 		b.randP = rand.Intn(100)
 
-		time.Sleep(1 * time.Minute)
-
 		// Random neighbour
 		randN := rand.Intn(len(h.neighs.AllNodes)) + 1
 		for {
@@ -344,26 +345,51 @@ func (b *banking) leaderLoop(ctx context.Context, h *handler) error {
 
 	log.Warn().Msg("starting observer (banking)")
 
-	// oldbalance := -1
+	oldBalance := -1
 	marker := ""
 	for {
 		select {
 		case <-ctx.Done():
 			log.Info().Msg("Stopping leader (banking)")
 			return nil
-		case <-time.After(1 * time.Second):
+		case <-time.After(5 * time.Second):
 		}
 
 		// Wait for results or start new state request
 		if marker == "" || len(b.receivedSnapshots[marker]) == len(h.neighs.AllNodes) {
 			if marker != "" {
-				// Compute Network balance
-
+				// Compute Network balance without events involved
+				balance := 0
+				affectingMsg := 0
+				for _, s := range b.receivedSnapshots[marker] {
+					balance = balance + s.Balance
+					for _, v := range s.MsgIn {
+						for _, m := range v {
+							// Check if payload starts with
+							switch payload := *m.Payload; {
+							case strings.HasPrefix(payload, "transactStart"): // Check if payload is allowed
+								affectingMsg = affectingMsg + 1
+							case strings.HasPrefix(payload, "transactBalance"): // Check if payload is allowed
+								affectingMsg = affectingMsg + 1
+							}
+						}
+					}
+				}
+				if balance != oldBalance && affectingMsg == 0 {
+					log.Warn().Msgf("Balance changed, old: %d, now: %d", oldBalance, balance)
+					oldBalance = balance
+				} else {
+					if affectingMsg != 0 {
+						log.Warn().Msgf("There are %d messages in the snapshot that might affect the state, skipping", affectingMsg)
+					}
+					log.Info().Msgf("Balance did not change (%d)", balance)
+				}
 			}
-			// Got result; rotate
+
+			// Got result; next iteration
 			marker = uuid.NewString()[:8]
 			log.Info().Msg("Starting consistent snapshot")
-			b.snapshots[marker] = NewSnapshot(h, b.balance)
+			b.snapshots[marker] = NewSnapshot(h, b.balance, b.randP)
 			b.receivedSnapshots[marker] = []*snapshot{}
 			m := com.Msg(h.uid, "BANKING", fmt.Sprintf("marker;%s", marker))
 			for _, connect := range h.neighs.Nodes {
@@ -536,8 +562,7 @@ func (b *banking) handle_transactStart(h *handler, msg *com.Message) error {
 		if balance >= b.balance {
 			b.balance = b.balance + (balance/100)*p
 		} else {
-
-			b.balance = b.balance - (balance/100)*p
+			b.balance = b.balance - (b.balance/100)*p
 		}
 		log.Info().Msgf("Updated balance from %d to %d", oldBalance, b.balance)
 
@@ -624,8 +649,7 @@ func (b *banking) handle_transactBalance(h *handler, msg *com.Message) error {
 		if balance >= b.balance {
 			b.balance = b.balance + (balance/100)*b.randP
 		} else {
-
-			b.balance = b.balance - (balance/100)*b.randP
+			b.balance = b.balance - (b.balance/100)*b.randP
 		}
 		log.Info().Msgf("Updated balance from %d to %d", oldBalance, b.balance)
 		b.transactBalanceReceived = true // Update so the transactLoop can continue
@@ -648,10 +672,11 @@ func (b *banking) handle_marker(h *handler, msg *com.Message) error {
 
 	if s, ok := b.snapshots[marker]; ok {
 		// Marker exists, mark receiving channel as complete
+		log.Info().Msgf("Stop receiving messages from %d", *msg.SourceUID)
 		s.msgInActive[*msg.SourceUID] = false
 	} else {
 		// Marker is new, init and send to all outgoing edges
-		b.snapshots[marker] = NewSnapshot(h, b.balance)
+		b.snapshots[marker] = NewSnapshot(h, b.balance, b.randP)
 		// Mark receiving edge as new
 		b.snapshots[marker].msgInActive[*msg.SourceUID] = false
 		// Send to all outgoing edges
