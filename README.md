@@ -336,3 +336,42 @@ a deadlock cannot happen.
 However, the initial messages of the transaction experiment are sent from each node after a random interval between 0 and 3000ms. This *could* generate a possible condition where the lamport clock of two independend outgoing messages is the same and therefore the priority queue implemented in this solution, which is only based on the lamport clock timestamp, stops working as the network state of the priority queue contains two different entries for one timestamp thus none of the two nodes will receive an acknowledgement from all nodes.
 A possible workaround would be to take in the `node_id` as a 2nd parameter in the priority queue to not stop the decision making.
 Another option would be to add a timeout to the mutual exclusion lock which after a certain amount of time floods the a release message despite not entering the critical section (thus skipping the critical section execution).
+
+
+## Benchmark results
+> All benchmarks ran with a custom script on a Kubernetes cluster, Grafana Loki was used to retrieve the data afterwards
+
+### Rumor experiment
+> The whole benchmark runs ~30 minutes
+
+Loki queries used:
+```
+# trusted
+sum by (n, m, c) (count_over_time({namespace="default", instance=~"node-.+-.+"} |= "Now trusted" |= "$rumor_marker" [1h]))
+
+# total_messages
+sum by (n, m, c) (count_over_time({namespace="default", instance=~"node-.+-.+"} |= ">>>" [1h]))
+```
+
+| C | m (edges) | n (nodes) | trusted (nodes) | total messages |
+|---|-----------|-----------|-----------------|----------------|
+| 2 | 9         | 6         | 5               | 15             |
+| 3 | 9         | 6         | 3               | 13             |
+| 2 | 12        | 8         | 7               | 21             |
+| 3 | 12        | 8         | 3               | 21             |
+| 2 | 15        | 10        | 7               | 21             |
+| 3 | 15        | 10        | 4               | 21             |
+| 2 | 18        | 12        | 6               | 23             |
+| 3 | 18        | 12        | 3               | 25             |
+| 2 | 21        | 14        | 10              | 31             |
+| 3 | 21        | 14        | 3               | 29             |
+| 2 | 24        | 16        | 9               | 33             |
+| 3 | 24        | 16        | 7               | 33             |
+| 2 | 27        | 18        | 10              | 37             |
+| 3 | 27        | 18        | 7               | 37             |
+| 2 | 30        | 20        | 12              | 41             |
+| 3 | 30        | 20        | 2               | 30             |
+| 2 | 33        | 22        | 12              | 45             |
+| 3 | 33        | 22        | 1               | 27             |
+| 2 | 36        | 24        | 14              | 49             |
+| 3 | 36        | 24        | 6               | 49             |

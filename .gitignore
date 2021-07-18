@@ -1,4 +1,4 @@
 launch.sh
 **/*.txt
 .vscode/
-
+**vendor/
