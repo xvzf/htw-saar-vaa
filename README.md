@@ -2,9 +2,6 @@
 > This project is based on a distributed systems course at my university, tailed towards bringing better understandings
 > for communication and state in them.
 
-TODO:
-- [ ] Rumor experiment; 20 iterations with different n, m, c
-- [ ] Consensus experiment; 10 iterations with different with different params
 
 ## Starting up multiple nodes
 > Note: Experiments showed everything > ~50 nodes runs into network timeouts
