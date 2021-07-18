@@ -375,3 +375,32 @@ sum by (n, m, c) (count_over_time({namespace="default", instance=~"node-.+-.+"} 
 | 3 | 33        | 22        | 1               | 27             |
 | 2 | 36        | 24        | 14              | 49             |
 | 3 | 36        | 24        | 6               | 49             |
+
+To sum-up the results:
+- With a grown number of edges for a node, the probability grows for the node to trust the rumor (expected as more possibilities to receive the rumor)
+- more nodes are not corresponding to a better trust; just the number of interconnects does
+- (obvious) with a growing `c`, the probability declines a node will trust a rumor
+
+### Consensus experiment
+> Graph pictures are located at hack/images
+
+All 10 runs are started at the same time. In order to reduce the load and allow the logging system to keep track on what's happening (aka building a graph later on), a delay has been injected for each outgoing message after the leader election
+
+The overall results show:
+- increasing the number of nodes, increases the message complexity roughly exponential
+- the larger p, the more complex messages are, however it is more likely to get a common result
+- propability for a common result grows with `aMax` (having `aMax` at infinite, there would always be a common result)
+- (potential) the larger `s` is, the more likely it is for a successful vote
+
+#### Multiple values for all parameters
+
+![graph0](https://github.com/xvzf/vaa/raw/main/hack/images/graph0.png "Graph 0")
+
+This graphs shows the increasing message complexity with growing `aMax` and number of edges in the network.
+Also, it shows the agreement is more likely to happen with a smaller `m` than with a larger `m`
+
+#### Average network activity for a similar scenario
+
+![graph1](https://github.com/xvzf/vaa/raw/main/hack/images/graph1.png "Graph 1")
+
+This graph shows 10 test cases running with the same settings. It shows how likely the execution happens on multiple runs.
