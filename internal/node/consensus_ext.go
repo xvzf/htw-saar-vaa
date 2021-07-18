@@ -73,7 +73,8 @@ type consensus struct {
 	leader *Leader
 
 	// Echo communication for state/collect requests.
-	echo map[string]int // map[<req_uid>]<counter_recv_messages>
+	echoLock sync.Mutex
+	echo     map[string]int // map[<req_uid>]<counter_recv_messages>
 
 	// Alignment on a common discrete time
 	sVote    int // number of nodes initiating the voting process
@@ -129,6 +130,8 @@ func (c *consensus) Preflight(ctx context.Context, h *handler) error {
 }
 
 func (c *consensus) Handle(h *handler, msg *com.Message) error {
+	c.echoLock.Lock()
+	defer c.echoLock.Unlock()
 	// Try to handle leader elect message
 	if ok, err := c.leader.TryHandleLeaderMessage(h, msg); ok {
 		return err
@@ -202,7 +205,7 @@ func (c *consensus) leaderLoop(ctx context.Context, h *handler) error {
 		if c.leader.IsLeader() {
 			break
 		} else if c.leader.ElectionComplete() {
-			log.Warn().Msg("This node lost the election (consensus)")
+			log.Warn().Msgf("This node lost the election (consensus), leader: %d", c.leader.leaderUID)
 			return nil
 		}
 	}
@@ -237,10 +240,12 @@ func (c *consensus) leaderLoop(ctx context.Context, h *handler) error {
 		}
 
 		// Check state; updated by receiving node process
+		c.echoLock.Lock()
 		_, okPrev := c.accStateDone[prevStateID]
 		_, okCurr := c.accStateDone[currStateID]
 		statePrev := c.accState[prevStateID]
 		stateCurr := c.accState[currStateID]
+		c.echoLock.Unlock()
 
 		if currStateID != "" && !okCurr {
 			// Wait for state to be reported
@@ -259,8 +264,10 @@ func (c *consensus) leaderLoop(ctx context.Context, h *handler) error {
 				currStateID = uuid.NewString()[0:8]
 				log.Info().Msgf("double counting mismatch; starting state collection with id %s", currStateID)
 
+				c.echoLock.Lock()
 				c.echo[currStateID] = 0
 				c.accState[currStateID] = &consensusState{active: false, msgInCounter: 0, msgOutCounter: 0}
+				c.echoLock.Unlock()
 				m := com.Msg(h.uid, "CONSENSUS", "stateRequest;"+currStateID)
 				_ = c.leader.PropagateChilds(h, m)
 			}
@@ -283,13 +290,16 @@ func (c *consensus) leaderLoop(ctx context.Context, h *handler) error {
 		case <-time.After(1 * time.Second):
 		}
 
+		c.echoLock.Lock()
 		_, ok := c.accResultDone[collectID]
 		if ok {
 			if res, ok := c.accResult[collectID]; ok {
 				log.Info().Msgf("Agreement: %t, (timestamp: %d)", res.agreement, res.timestamp)
+				c.echoLock.Unlock()
 			} else {
 				err := fmt.Errorf("result not available, internal error %s", collectID)
 				log.Err(err).Msg("invalid state")
+				c.echoLock.Unlock()
 				return err
 			}
 			// We're done here, get out

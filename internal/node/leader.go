@@ -65,10 +65,14 @@ func (l *Leader) TryHandleLeaderMessage(h *handler, msg *com.Message) (bool, err
 }
 
 func (l *Leader) ElectionComplete() bool {
+	l.Lock()
+	defer l.Unlock()
 	return l.leaderUID != 0
 }
 
 func (l *Leader) IsLeader() bool {
+	l.Lock()
+	defer l.Unlock()
 	return l.isLeader
 }
 
